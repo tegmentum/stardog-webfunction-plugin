@@ -1,4 +1,9 @@
-[![Build Status](https://travis-ci.org/semantalytics/stardog-wasm.svg?branch=master)](https://travis-ci.org/semantalytics/stardog-wasm)
+> **Repository moved.** As of 2026-07-05 this project lives at
+> [tegmentum/stardog-webfunction-plugin](https://github.com/tegmentum/stardog-webfunction-plugin)
+> (previously `semantalytics/stardog-webfunction-plugin`). The old URL
+> auto-redirects. Java package base and Maven groupId are now `ai.tegmentum.*`.
+> The `http://semantalytics.com/2021/03/ns/stardog/webfunction/` RDF vocabulary
+> IRI is preserved for identifier stability.
 
 # Stardog WebFunctions
 

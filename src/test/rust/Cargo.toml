@@ -18,6 +18,7 @@ members = [
     "function/mapping_dictionary_get",
     "function/array_of",
     "function/to_upper",
+    "function/to_upper_component",
 ]
 
 [profile.release]
