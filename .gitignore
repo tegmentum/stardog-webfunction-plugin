@@ -3,3 +3,7 @@
 target
 dependency-reduced-pom.xml
 Cargo.lock
+# Top-level META-INF/ appears when Stardog JARs are extracted at the repo root
+# by mistake; it never enters the classpath and shouldn't be tracked. Only the
+# leading slash form applies — src/main/resources/META-INF/ is unaffected.
+/META-INF/
