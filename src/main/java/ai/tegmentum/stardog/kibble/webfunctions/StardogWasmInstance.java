@@ -420,8 +420,12 @@ public class StardogWasmInstance implements Closeable {
     public SelectQueryResult compute(final Value[] values, long multiplicity) throws IOException {
         if (isComponentMode()) {
             final WitValueMarshaller m = marshaller();
+            // WIT declares mult as u64; auto-marshalling would coerce Long → WitS64
+            // and the guest-side u64 param wouldn't match. Wrap explicitly.
             final WitValue stepResult = (WitValue) ((ComponentInstance) instance).invokeWit(
-                    "aggregate-step", m.toWitArgs(values), multiplicity);
+                    "aggregate-step",
+                    m.toWitArgs(values),
+                    ai.tegmentum.wasmtime4j.wit.WitU64.of(multiplicity));
             unwrapVoidResult(stepResult);
             // Aggregate-step returns result<_, string>; the final materialized value
             // is fetched separately via aggregateGetValue().

@@ -2,6 +2,7 @@
 
 members = [
     "aggregate/sum",
+    "aggregate/sum_component",
     "function/concat",
     "function/const0x1x1",
     "function/const0x1x2",
