@@ -409,8 +409,8 @@ public class StardogWasmInstance implements Closeable {
 
     public SelectQueryResult doc() throws IOException {
         if (isComponentMode()) {
-            final Object result = ((ComponentInstance) instance).invoke("doc");
-            return marshaller().bindingSetsFromJava(result);
+            final WitValue result = (WitValue) ((ComponentInstance) instance).invokeWit("doc");
+            return marshaller().bindingSetsFromWit(result);
         }
         final Function evaluateFunction = instance.function(WASM_FUNCTION_DOC).get();
         final Integer output_pointer = ((Number) evaluateFunction.invoke()).intValue();
@@ -420,7 +420,7 @@ public class StardogWasmInstance implements Closeable {
     public SelectQueryResult compute(final Value[] values, long multiplicity) throws IOException {
         if (isComponentMode()) {
             final WitValueMarshaller m = marshaller();
-            final Object stepResult = ((ComponentInstance) instance).invoke(
+            final WitValue stepResult = (WitValue) ((ComponentInstance) instance).invokeWit(
                     "aggregate-step", m.toWitArgs(values), multiplicity);
             unwrapVoidResult(stepResult);
             // Aggregate-step returns result<_, string>; the final materialized value
@@ -460,55 +460,52 @@ public class StardogWasmInstance implements Closeable {
 
     private Cardinality componentCardinalityEstimate(final Cardinality in, final List<Value> args) {
         final WitValueMarshaller m = marshaller();
-        final Object result = ((ComponentInstance) instance).invoke(
+        final WitValue result = (WitValue) ((ComponentInstance) instance).invokeWit(
                 "cardinality-estimate",
                 m.toWitCardinality(in),
                 m.toWitArgs(args.toArray(new Value[0])));
-        final Object ok = unwrapOk(result, PlanException::new);
-        return m.cardinalityFromJava(ok);
+        final WitValue ok = unwrapOkWit(result, PlanException::new);
+        return m.cardinalityFromWit(ok);
     }
 
     private SelectQueryResult componentInvokeBindingSets(final String funcName, final Object... args) throws IOException {
-        final Object result = ((ComponentInstance) instance).invoke(funcName, args);
-        final Object ok;
+        final WitValue result = (WitValue) ((ComponentInstance) instance).invokeWit(funcName, args);
+        final WitValue ok;
         try {
-            ok = unwrapOk(result, IOException::new);
+            ok = unwrapOkWit(result, IOException::new);
         } catch (RuntimeException re) {
             if (re.getCause() instanceof IOException) throw (IOException) re.getCause();
             throw re;
         }
-        return marshaller().bindingSetsFromJava(ok);
+        return marshaller().bindingSetsFromWit(ok);
     }
 
-    private void unwrapVoidResult(final Object result) {
-        unwrapOk(result, StardogException::new);
+    private void unwrapVoidResult(final WitValue result) {
+        unwrapOkWit(result, StardogException::new);
     }
 
     /**
-     * Result Java shape from JniComponentInstanceImpl.invoke:
-     * {@code Map { "isOk": Boolean, "ok"|"err": <payload>.toJava() }}. Returns the ok
-     * payload; on err, throws a runtime exception built by {@code errFactory} carrying
-     * the err string. Wrapper indirection lets callers surface checked exceptions.
+     * WitResult tree returned by {@link ComponentInstance#invokeWit}: either
+     * {@code ok(payload)} or {@code err(string)}. Returns the ok payload; on err,
+     * throws a runtime exception built by {@code errFactory} wrapping the err
+     * string. Wrapper indirection lets callers surface checked exceptions.
      */
-    @SuppressWarnings("unchecked")
-    private static Object unwrapOk(final Object result,
-                                   final java.util.function.Function<String, ? extends Throwable> errFactory) {
-        if (!(result instanceof java.util.Map)) {
+    private static WitValue unwrapOkWit(final WitValue result,
+                                        final java.util.function.Function<String, ? extends Throwable> errFactory) {
+        if (!(result instanceof WitResult)) {
             throw new StardogException("Unexpected component invocation return type: "
-                    + (result == null ? "null" : result.getClass().getName())
-                    + " value=" + result);
+                    + (result == null ? "null" : result.getClass().getName()));
         }
-        final java.util.Map<String, Object> m = (java.util.Map<String, Object>) result;
-        final Boolean isOk = (Boolean) m.get("isOk");
-        if (Boolean.FALSE.equals(isOk)) {
-            final Object errPayload = m.get("err");
-            final String msg = errPayload == null ? "component returned err with no payload"
-                    : errPayload.toString();
+        final WitResult wr = (WitResult) result;
+        if (wr.isErr()) {
+            final String msg = wr.getErr()
+                    .map(v -> ((WitString) v).getValue())
+                    .orElse("component returned err with no payload");
             final Throwable t = errFactory.apply(msg);
             if (t instanceof RuntimeException) throw (RuntimeException) t;
             throw new RuntimeException(t);
         }
-        return m.get("ok");
+        return wr.getOk().orElse(null);
     }
 
     private ByteArrayOutputStream readResult(final Memory memory, final Integer output_pointer) {

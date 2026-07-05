@@ -5,6 +5,7 @@ import ai.tegmentum.wasmtime4j.wit.WitOption;
 import ai.tegmentum.wasmtime4j.wit.WitRecord;
 import ai.tegmentum.wasmtime4j.wit.WitString;
 import ai.tegmentum.wasmtime4j.wit.WitType;
+import ai.tegmentum.wasmtime4j.wit.WitEnum;
 import ai.tegmentum.wasmtime4j.wit.WitFloat64;
 import ai.tegmentum.wasmtime4j.wit.WitU64;
 import ai.tegmentum.wasmtime4j.wit.WitValue;
@@ -150,75 +151,65 @@ public final class WitValueMarshaller {
     }
 
     private WitValue accuracyToWit(final Accuracy accuracy) {
-        // Enum values are represented as WitVariants with no payload in this SDK.
-        return WitVariant.of(ACCURACY_TYPE, accuracy.name().toLowerCase().replace('_', '-'));
+        return WitEnum.of(ACCURACY_TYPE, accuracy.name().toLowerCase().replace('_', '-'));
     }
 
-    // ---- Java-shape unmarshalling (from ComponentInstance.invoke return) ------
-    //
-    // JniComponentInstanceImpl.invoke returns WitValue.toJava() rather than the raw
-    // WitValue tree, so the return path receives plain Java shapes:
-    //   variant → Map{ "case": String, "payload": <recursively> }
-    //   record  → Map<String, Object>
-    //   list    → List<Object>
-    //   option  → Optional<Object>
-    //   result  → Map{ "isOk": Boolean, "ok"|"err": <recursively> }
-    //   enum    → treated same as variant (case name, no payload)
-    // Documenting the asymmetry with the WitValue-typed input path for the upstream
-    // reader.
+    // ---- WIT-typed unmarshalling (from ComponentInstance.invokeWit return) ----
 
-    @SuppressWarnings("unchecked")
-    public Value valueFromJava(final Object obj) {
-        final Map<String, Object> m = (Map<String, Object>) obj;
-        final String kase = (String) m.get("case");
-        final Object payload = m.get("payload");
-        switch (kase) {
+    public Value valueFromWit(final WitValue witValue) {
+        final WitVariant variant = (WitVariant) witValue;
+        switch (variant.getCaseName()) {
             case "iri":
-                return Values.iri((String) payload);
+                return Values.iri(((WitString) variant.getPayload()
+                        .orElseThrow(() -> missingPayload("iri"))).getValue());
             case "bnode":
-                return Values.bnode((String) payload);
+                return Values.bnode(((WitString) variant.getPayload()
+                        .orElseThrow(() -> missingPayload("bnode"))).getValue());
             case "literal":
-                return literalFromJava((Map<String, Object>) payload);
+                return literalFromWit((WitRecord) variant.getPayload()
+                        .orElseThrow(() -> missingPayload("literal")));
             default:
-                throw new IllegalArgumentException("Unknown value case: " + kase);
+                throw new IllegalArgumentException("Unknown value case: " + variant.getCaseName());
         }
     }
 
-    private Literal literalFromJava(final Map<String, Object> record) {
-        final String label = (String) record.get("label");
-        final String datatype = (String) record.get("datatype");
-        final Object langObj = record.get("lang");
-        if (langObj instanceof Optional && ((Optional<?>) langObj).isPresent()) {
-            return Values.literal(label, (String) ((Optional<?>) langObj).get());
+    private static IllegalArgumentException missingPayload(final String kase) {
+        return new IllegalArgumentException("value variant '" + kase + "' is missing payload");
+    }
+
+    private Literal literalFromWit(final WitRecord record) {
+        final String label = ((WitString) record.getField("label")).getValue();
+        final String datatype = ((WitString) record.getField("datatype")).getValue();
+        final Optional<Object> lang = ((WitOption) record.getField("lang")).toJava();
+        if (lang.isPresent()) {
+            return Values.literal(label, (String) lang.get());
         }
         return Values.literal(label, Values.iri(datatype));
     }
 
-    @SuppressWarnings("unchecked")
-    public SelectQueryResult bindingSetsFromJava(final Object obj) {
-        final Map<String, Object> m = (Map<String, Object>) obj;
+    public SelectQueryResult bindingSetsFromWit(final WitValue witValue) {
+        final WitRecord record = (WitRecord) witValue;
         final List<String> vars = new ArrayList<>();
-        for (Object v : (List<Object>) m.get("vars")) {
-            vars.add((String) v);
+        for (WitValue v : ((WitList) record.getField("vars")).getElements()) {
+            vars.add(((WitString) v).getValue());
         }
         final List<BindingSet> rows = new ArrayList<>();
-        for (Object row : (List<Object>) m.get("rows")) {
+        for (WitValue rowVal : ((WitList) record.getField("rows")).getElements()) {
             final BindingSets.Builder bsb = BindingSets.builder();
-            for (Object bindingObj : (List<Object>) row) {
-                final Map<String, Object> binding = (Map<String, Object>) bindingObj;
-                bsb.add((String) binding.get("name"), valueFromJava(binding.get("value")));
+            for (WitValue bindingVal : ((WitList) rowVal).getElements()) {
+                final WitRecord binding = (WitRecord) bindingVal;
+                bsb.add(((WitString) binding.getField("name")).getValue(),
+                        valueFromWit(binding.getField("value")));
             }
             rows.add(bsb.build());
         }
         return new SelectQueryResultImpl(vars, rows);
     }
 
-    @SuppressWarnings("unchecked")
-    public Cardinality cardinalityFromJava(final Object obj) {
-        final Map<String, Object> m = (Map<String, Object>) obj;
-        final double value = ((Number) m.get("value")).doubleValue();
-        final Map<String, Object> accMap = (Map<String, Object>) m.get("accuracy");
-        final String accName = (String) accMap.get("case");
+    public Cardinality cardinalityFromWit(final WitValue witValue) {
+        final WitRecord record = (WitRecord) witValue;
+        final double value = ((WitFloat64) record.getField("value")).getValue();
+        final String accName = ((WitEnum) record.getField("accuracy")).getDiscriminant();
         final Accuracy accuracy = Accuracy.valueOf(accName.toUpperCase().replace('-', '_'));
         return Cardinality.of(value, accuracy);
     }
