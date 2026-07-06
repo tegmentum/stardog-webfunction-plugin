@@ -7,7 +7,21 @@
 
 # Stardog WebFunctions
 
-A [Stardog](http://stardog.com) plugin for executing web assembly functions
+A [Stardog](http://stardog.com) plugin for executing web assembly functions.
+
+Part of a three-binding family that all share one component ABI:
+
+| Binding | Repo |
+|---|---|
+| Stardog | you are here |
+| Apache Jena | [tegmentum/jena-webfunction-plugin](https://github.com/tegmentum/jena-webfunction-plugin) |
+| Eclipse RDF4J | [tegmentum/rdf4j-webfunction-plugin](https://github.com/tegmentum/rdf4j-webfunction-plugin) |
+
+The WIT world at `src/main/wit/webfunction.wit` (package `stardog:webfunction@0.2.0`)
+is byte-for-byte identical across the three repos, so a single Rust component
+(built with [`cargo component`](https://github.com/bytecodealliance/cargo-component))
+runs unmodified under any of the three SPARQL engines. WASM runtime is
+[webassembly4j](https://github.com/tegmentum/webassembly4j) (wasmtime provider).
 
 ```
 prefix wf: <http://semantalytics.com/2021/03/ns/stardog/webfunction/>
@@ -17,6 +31,19 @@ select ?result where { bind(wf:call(f:toUpper, \"stardog\") AS ?result) }";
 ```
 
 Stardog WebFunctions supports loading functions from IPFS to reduce external dependencies and allow functions to be called offline
+
+## SPARQL surfaces
+
+The wf:call function is exposed through four different SPARQL surfaces; all
+back onto the same component's `evaluate` / `aggregate-step` /
+`aggregate-finish` exports.
+
+| Shape | Syntax | When to reach for it |
+|---|---|---|
+| Filter | `BIND(wf:call(<url>, args...) AS ?x)` | one value out of one wasm call |
+| Aggregate | `SELECT (wf:call(...) AS ?sum) WHERE {...} GROUP BY ...` | reduce query rows to one value |
+| Property | `?x wf:call (<url> args...)` | multi-row output, single subject variable |
+| SERVICE | `SERVICE <url> { ... }` | multi-row, multi-var output |
 
 ## Performance
 
