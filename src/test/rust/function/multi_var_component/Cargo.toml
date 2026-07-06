@@ -1,0 +1,17 @@
+[package]
+name = "multi_var_component"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.36"
+
+[package.metadata.component]
+package = "stardog:webfunction-multi-var"
+
+[package.metadata.component.target]
+path = "wit"
+world = "webfunction"

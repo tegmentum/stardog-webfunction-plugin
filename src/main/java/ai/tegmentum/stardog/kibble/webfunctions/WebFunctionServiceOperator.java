@@ -131,13 +131,23 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
             }
             if(selectQueryResult.hasNext()) {
                 final BindingSet bindingSet = selectQueryResult.next();
+                // Look up bindings positionally against the SelectQueryResult's
+                // declared variables list. Module-mode WASM emits vars named
+                // value_0, value_1, …; component-mode WIT binding-sets can emit
+                // arbitrary names (e.g. from a multi-var component). Falling
+                // back to value_%d keeps compatibility if variables() is empty.
+                final List<String> queryVars = selectQueryResult.variables();
 
                 IntStream.range(0, results.size()).forEach(i -> {
+                    final String varName = i < queryVars.size()
+                            ? queryVars.get(i)
+                            : String.format("value_%d", i);
+                    final Value raw = bindingSet.get(varName);
                     final Value value;
-                    if (bindingSet.get(String.format("value_%d", i)) instanceof Literal && ((Literal) bindingSet.get(String.format("value_%d", i))).datatypeIRI().equals(iri("tag:stardog:api:array"))) {
-                        value = ArrayLiteral.coerce((Literal) bindingSet.get(String.format("value_%d", i)));
+                    if (raw instanceof Literal && ((Literal) raw).datatypeIRI().equals(iri("tag:stardog:api:array"))) {
+                        value = ArrayLiteral.coerce((Literal) raw);
                     } else {
-                        value = bindingSet.get(String.format("value_%d", i));
+                        value = raw;
                     }
                     solution.setValue(results.get(i).getName(), value, getMappings());
                 });

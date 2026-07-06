@@ -1,0 +1,53 @@
+package stardog:webfunction@0.2.0;
+
+interface types {
+    variant value {
+        iri(string),
+        literal(literal),
+        bnode(string),
+    }
+
+    record literal {
+        label: string,
+        datatype: string,
+        lang: option<string>,
+    }
+
+    record binding {
+        name: string,
+        value: value,
+    }
+
+    type binding-set = list<binding>;
+
+    record binding-sets {
+        vars: list<string>,
+        rows: list<binding-set>,
+    }
+
+    enum accuracy {
+        verified,
+        injected,
+        accurate,
+        mostly-accurate,
+        probably-accurate,
+        possibly-off,
+        probably-off,
+        random,
+    }
+
+    record cardinality {
+        value: f64,
+        accuracy: accuracy,
+    }
+}
+
+world webfunction {
+    use types.{value, binding-sets, cardinality};
+
+    export evaluate: func(args: list<value>) -> result<binding-sets, string>;
+    export aggregate-step: func(args: list<value>, mult: u64) -> result<_, string>;
+    export aggregate-finish: func() -> result<binding-sets, string>;
+    export cardinality-estimate: func(input: cardinality, args: list<value>) -> result<cardinality, string>;
+    export doc: func() -> binding-sets;
+}

@@ -20,6 +20,7 @@ members = [
     "function/array_of",
     "function/to_upper",
     "function/to_upper_component",
+    "function/multi_var_component",
 ]
 
 [profile.release]
