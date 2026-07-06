@@ -132,6 +132,19 @@
             <artifactId>wasmtime4j-native</artifactId>
             <version>46.0.1-1.2.0</version>
         </dependency>
+        <!--
+            Explicitly pull the linux-x86_64 classifier so the shaded plugin jar
+            carries natives/linux-x86_64/libwasmtime4j.so. WasmTestSuiteIT runs
+            Stardog inside a linux/amd64 Docker container; without this jar the
+            plugin cannot load its native runtime and the IT skips (or fails)
+            regardless of the dev workstation's arch.
+        -->
+        <dependency>
+            <groupId>ai.tegmentum</groupId>
+            <artifactId>wasmtime4j-native</artifactId>
+            <version>46.0.1-1.2.0</version>
+            <classifier>linux-x86_64</classifier>
+        </dependency>
     </dependencies>
 
     <repositories>
