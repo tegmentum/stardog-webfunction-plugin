@@ -33,6 +33,11 @@ public final class StardogContainer extends GenericContainer<StardogContainer> {
         super(image);
         addExposedPort(STARDOG_PORT);
         withEnv("STARDOG_SERVER_JAVA_ARGS", "-Xmx1g");
+        // Stardog scans STARDOG_EXT for third-party jars at server start —
+        // point it at the .ext directory withPluginJar() mounts into. Without
+        // this the plugin is on disk but nothing adds it to the JVM classpath
+        // and every wf:* function comes back "Unrecognized".
+        withEnv("STARDOG_EXT", CONTAINER_EXT_DIR);
         // Ready when the admin HTTP endpoint returns 200.
         waitingFor(Wait.forHttp("/admin/alive")
                 .forPort(STARDOG_PORT)

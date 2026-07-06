@@ -33,7 +33,7 @@ public class WasmTestSuiteIT {
     private static final String PLUGIN_JAR = System.getProperty("wf.plugin.jar",
             "target/tegmentum-stardog-webfunction-1.0.3.jar");
     private static final String WASM_PATH = System.getProperty("wf.toUpper.wasm",
-            "src/test/rust/target/wasm32-wasip1/release/to_upper_component.wasm");
+            "src/test/rust/target/wasm32-unknown-unknown/release/to_upper.wasm");
 
     private static StardogContainer CONTAINER;
     private static String WASM_URL;
@@ -50,7 +50,7 @@ public class WasmTestSuiteIT {
         CONTAINER = new StardogContainer()
                 .withLicense(LICENSE_PATH)
                 .withPluginJar(PLUGIN_JAR);
-        WASM_URL = CONTAINER.withWasm(WASM_PATH, "/opt/wasm/to_upper_component.wasm");
+        WASM_URL = CONTAINER.withWasm(WASM_PATH, "/opt/wasm/to_upper.wasm");
         CONTAINER.start();
 
         try (AdminConnection admin = AdminConnectionConfiguration.toServer(CONTAINER.getServerUrl())
@@ -66,10 +66,18 @@ public class WasmTestSuiteIT {
         if (CONTAINER != null) CONTAINER.stop();
     }
 
+    // Inline the vocabulary URI rather than depending on WebFunctionVocabulary
+    // — the shade plugin's dependency-reduced-pom strips semver4j (needed by
+    // that class's static init), so referencing it from the failsafe classpath
+    // NoClassDefFound-s during mvn verify. See the WebFunctionVocabulary source
+    // for the canonical namespace template.
+    private static final String WF_NAMESPACE =
+            "http://semantalytics.com/2021/03/ns/stardog/webfunction/latest/";
+
     @Test
     public void wfCallInsideContainerUppercases() {
-        final String query = WebFunctionVocabulary.sparqlPrefix("wf", "0.0.0")
-                + " SELECT ?result WHERE { BIND(wf:call(<" + WASM_URL + ">, \"stardog\") AS ?result) }";
+        final String query = "PREFIX wf: <" + WF_NAMESPACE + ">"
+                + " SELECT ?result WHERE { BIND(wf:call(str(<" + WASM_URL + ">), \"stardog\") AS ?result) }";
         try (Connection conn = ConnectionConfiguration.to(DB)
                 .server(CONTAINER.getServerUrl())
                 .credentials("admin", "admin")
