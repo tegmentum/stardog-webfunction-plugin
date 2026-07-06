@@ -17,3 +17,22 @@ select ?result where { bind(wf:call(f:toUpper, \"stardog\") AS ?result) }";
 ```
 
 Stardog WebFunctions supports loading functions from IPFS to reduce external dependencies and allow functions to be called offline
+
+## Testing
+
+Two paths depending on your environment:
+
+**`mvn test`** — component-mode direct-instantiation tests (no Stardog server
+required). Includes `TestComponentMode` and `TestComponentAggregate`. The
+embedded-Stardog `WasmTestSuite` is included but skips cleanly (via JUnit
+`assume`) when the machine's installed Stardog native library
+(`$STARDOG/lib/libStarrocks-*`) doesn't match the Stardog Java jars this
+build compiles against.
+
+**`mvn verify`** — additionally runs `WasmTestSuiteIT` via Testcontainers:
+boots a `stardog/stardog` container, mounts the shaded plugin JAR from
+`target/` into `/var/opt/stardog/.ext/`, drops the smoke-test wasm into
+`/opt/wasm/`, and runs a `wf:call` SPARQL query against the running server.
+Requirements: Docker; `STARDOG_LICENSE_PATH` env pointing at a valid license
+file. On Apple Silicon, set `DOCKER_DEFAULT_PLATFORM=linux/amd64` (Stardog
+only ships linux/amd64 images).

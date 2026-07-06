@@ -45,12 +45,13 @@
 
     <properties>
         <stardog.major.version>12</stardog.major.version>
-        <stardog.version>${stardog.major.version}.0.0</stardog.version>
+        <stardog.version>12.1.1</stardog.version>
         <junit.version>4.12</junit.version>
         <slf4j.version>1.7.21</slf4j.version>
         <assertj.version>3.15.0</assertj.version>
         <xmlapis.version>1.4.01</xmlapis.version>
         <maven.version>3.3.9</maven.version>
+        <testcontainers.version>2.0.5</testcontainers.version>
     </properties>
 
     <dependencies>
@@ -98,6 +99,12 @@
             <groupId>xml-apis</groupId>
             <artifactId>xml-apis</artifactId>
             <version>${xmlapis.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -184,12 +191,12 @@
                     <dependency>
                         <groupId>org.ow2.asm</groupId>
                         <artifactId>asm</artifactId>
-                        <version>9.8</version>
+                        <version>9.10.1</version>
                     </dependency>
                     <dependency>
                         <groupId>org.ow2.asm</groupId>
                         <artifactId>asm-commons</artifactId>
-                        <version>9.8</version>
+                        <version>9.10.1</version>
                     </dependency>
                 </dependencies>
                 <configuration>
@@ -303,11 +310,36 @@
                     <argLine>-Djava.library.path=${env.STARDOG}/lib --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.invoke=ALL-UNNAMED --add-opens java.base/java.io=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/sun.security.ssl=ALL-UNNAMED</argLine>
                     <excludes>
                         <exclude>**/Test*.java</exclude>
+                        <exclude>**/*IT.java</exclude>
                     </excludes>
                     <includes>
                         <include>**/WasmTestSuite.java</include>
                     </includes>
                 </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.5.2</version>
+                <configuration>
+                    <argLine>--add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.invoke=ALL-UNNAMED --add-opens java.base/java.io=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/sun.security.ssl=ALL-UNNAMED</argLine>
+                    <environmentVariables>
+                        <DOCKER_HOST>${env.DOCKER_HOST}</DOCKER_HOST>
+                        <DOCKER_DEFAULT_PLATFORM>${env.DOCKER_DEFAULT_PLATFORM}</DOCKER_DEFAULT_PLATFORM>
+                        <STARDOG_LICENSE_PATH>${env.STARDOG_LICENSE_PATH}</STARDOG_LICENSE_PATH>
+                    </environmentVariables>
+                    <includes>
+                        <include>**/*IT.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
