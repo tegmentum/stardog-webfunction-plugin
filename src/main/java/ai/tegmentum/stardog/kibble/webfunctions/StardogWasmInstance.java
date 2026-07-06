@@ -86,6 +86,17 @@ public class StardogWasmInstance implements Closeable {
                 }
             });
 
+    // Component-mode caches: one shared Engine built lazily on first component
+    // call (WebFunctionConfig properties are frozen at that point); one
+    // Component per URL, so repeat wf:call invocations skip download + compile
+    // and only pay instantiation cost. Module-mode still uses per-call Engine
+    // + Module because its linking context binds a per-instance MappingDictionary
+    // reference and the current wiring is easier to reason about that way.
+    private static volatile Engine COMPONENT_MODE_SHARED_ENGINE;
+    private static final Object COMPONENT_MODE_ENGINE_LOCK = new Object();
+    private static final java.util.concurrent.ConcurrentHashMap<URL, Component> COMPONENT_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     private static byte[] getWasm(final URL wasmUrl) throws IOException {
 
         final URLConnection conn = wasmUrl.openConnection();
@@ -190,33 +201,32 @@ public class StardogWasmInstance implements Closeable {
     }
 
     public StardogWasmInstance(final URL wasmUrl) throws ExecutionException {
-        final ai.tegmentum.webassembly4j.api.WebAssemblyBuilder engineBuilder =
-                WebAssembly.builder()
-                        .provider(WebFunctionConfig.engineProvider())
-                        .config(WebFunctionConfig.fromSystemProperties());
-        WebFunctionConfig.engineId().ifPresent(engineBuilder::engine);
-        this.engine = engineBuilder.build();
-
-        final byte[] bytes = loadingCache.get(wasmUrl);
-
         switch (WebFunctionConfig.engineMode()) {
             case COMPONENT:
-                if (!engine.capabilities().supportsComponents()) {
-                    engine.close();
-                    throw new IllegalStateException(
-                            WebFunctionConfig.PROP_ENGINE_MODE + "=component but engine '"
-                                    + engine.info().engineId() + "' does not support components");
+                // Reuse the shared engine + cached component; do NOT hold the engine
+                // in `this.engine` since we don't want close() to release the shared
+                // resources. The instance is per-call.
+                this.component = null;
+                this.engine = null;
+                final Component cached;
+                try {
+                    cached = componentModeComponentFor(wasmUrl);
+                } catch (IOException ioe) {
+                    throw new RuntimeException(ioe);
                 }
-                // Component-mode linking context declares no core host functions.
-                // The wasmtime provider rejects any core-shaped host imports when
-                // instantiating a component; WIT-level host imports must be defined
-                // via native ComponentLinker.defineFunction (out of scope here — the
-                // current component ABI declares no imports beyond WASI).
-                this.component = engine.loadComponent(bytes);
-                this.instance = component.instantiate(DefaultLinkingContext.builder().build());
+                this.instance = cached.instantiate(DefaultLinkingContext.builder().build());
                 break;
             case MODULE:
             default:
+                final ai.tegmentum.webassembly4j.api.WebAssemblyBuilder engineBuilder =
+                        WebAssembly.builder()
+                                .provider(WebFunctionConfig.engineProvider())
+                                .config(WebFunctionConfig.fromSystemProperties());
+                WebFunctionConfig.engineId().ifPresent(engineBuilder::engine);
+                this.engine = engineBuilder.build();
+
+                final byte[] bytes = loadingCache.get(wasmUrl);
+
                 final DefaultLinkingContext linkingContext = DefaultLinkingContext.builder()
                         .addHostFunction("env", WASM_FUNCTION_MAPPING_DICTIONARY_ADD,
                                 new ValueType[]{ValueType.I32}, new ValueType[]{ValueType.I64},
@@ -229,6 +239,39 @@ public class StardogWasmInstance implements Closeable {
                 this.instance = module.instantiate(linkingContext);
                 break;
         }
+    }
+
+    private static Engine componentModeSharedEngine() {
+        Engine e = COMPONENT_MODE_SHARED_ENGINE;
+        if (e != null) return e;
+        synchronized (COMPONENT_MODE_ENGINE_LOCK) {
+            if (COMPONENT_MODE_SHARED_ENGINE == null) {
+                final ai.tegmentum.webassembly4j.api.WebAssemblyBuilder engineBuilder =
+                        WebAssembly.builder()
+                                .provider(WebFunctionConfig.engineProvider())
+                                .config(WebFunctionConfig.fromSystemProperties());
+                WebFunctionConfig.engineId().ifPresent(engineBuilder::engine);
+                final Engine built = engineBuilder.build();
+                if (!built.capabilities().supportsComponents()) {
+                    built.close();
+                    throw new IllegalStateException(
+                            WebFunctionConfig.PROP_ENGINE_MODE + "=component but engine '"
+                                    + built.info().engineId() + "' does not support components");
+                }
+                COMPONENT_MODE_SHARED_ENGINE = built;
+            }
+            return COMPONENT_MODE_SHARED_ENGINE;
+        }
+    }
+
+    private static Component componentModeComponentFor(final URL wasmUrl) throws IOException, ExecutionException {
+        Component cached = COMPONENT_CACHE.get(wasmUrl);
+        if (cached != null) return cached;
+        final Engine engine = componentModeSharedEngine();
+        final byte[] bytes = loadingCache.get(wasmUrl);
+        // computeIfAbsent — engine.loadComponent doesn't throw checked IOException
+        // so the lambda stays clean.
+        return COMPONENT_CACHE.computeIfAbsent(wasmUrl, u -> engine.loadComponent(bytes));
     }
 
     private Value[] readFromWasmMemory(final String name, final int output_pointer) {
@@ -356,6 +399,10 @@ public class StardogWasmInstance implements Closeable {
     }
 
     public void close() {
+        // In component mode the shared engine + cached component are not held
+        // on this instance (they live in the static cache), so nothing to
+        // release beyond the per-call ComponentInstance. Module mode still
+        // owns its engine + module.
         if (module != null) {
             module.close();
         }
@@ -453,7 +500,9 @@ public class StardogWasmInstance implements Closeable {
     }
 
     private boolean isComponentMode() {
-        return component != null;
+        // Component mode uses a shared cached component (not held on `this`),
+        // so distinguish by mode config rather than by nullness of `component`.
+        return WebFunctionConfig.engineMode() == WebFunctionConfig.EngineMode.COMPONENT;
     }
 
     private WitValueMarshaller marshaller() {
