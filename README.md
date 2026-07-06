@@ -18,6 +18,26 @@ select ?result where { bind(wf:call(f:toUpper, \"stardog\") AS ?result) }";
 
 Stardog WebFunctions supports loading functions from IPFS to reduce external dependencies and allow functions to be called offline
 
+## Performance
+
+Component-mode caches a shared `Engine` (built once from `WebFunctionConfig`
+on first `wf:call`) and a `ConcurrentHashMap<URL, Component>` of compiled
+components. Repeat calls skip download + compile; only the per-call
+`ComponentInstance` is fresh. `webfunctions.*` system properties are read once
+at first use — changing them mid-run has no effect.
+
+Bench (Darwin aarch64, `to_upper` component, warm cache):
+- Component mode `evaluate`: ~20 µs/op (49k ops/s)
+- Component mode `instantiate`: ~356 µs/op — down from 16.8 ms/op before
+  caching (47× faster).
+- Module mode `evaluate`: ~49 µs/op — the malloc / JSON round-trip on every
+  call is real overhead.
+
+Module mode is not cached; its linking context binds a per-instance
+`MappingDictionary` reference, and the caching refactor would need to route
+that through the shared engine, which isn't worth the effort while
+component mode is the recommended path.
+
 ## Testing
 
 Two paths depending on your environment:
