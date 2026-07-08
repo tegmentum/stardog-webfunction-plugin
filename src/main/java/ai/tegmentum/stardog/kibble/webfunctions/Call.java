@@ -100,12 +100,18 @@ public final class Call extends AbstractExpression implements UserDefinedFunctio
                         if (Arrays.stream(valueOrErrors).noneMatch(ValueOrError::isError)) {
                             final Value[] values = Arrays.stream(valueOrErrors).map(ValueOrError::value).toArray(Value[]::new);
 
+                            // v0.3.0 host-callback context: nested wf:call reuses
+                            // the outer binding; unbindIfOutermost clears only
+                            // when this frame is the top of the stack.
+                            final CallbackContext cbCtx = CallbackContext.bind();
                             try (StardogWasmInstance stardogWasmInstance = StardogWasmInstance.from(values[0], valueSolution.getDictionary())) {
                                 try(final SelectQueryResult selectQueryResult = stardogWasmInstance.evaluate(Arrays.stream(values).skip(1).toArray(Value[]::new))) {
                                     return stardogWasmInstance.selectQueryResultToValueOrError(selectQueryResult);
                                 }
                             } catch (IOException | ExecutionException ex) {
                                 return ValueOrError.Error;
+                            } finally {
+                                CallbackContext.unbindIfOutermost(cbCtx);
                             }
                         } else {
                             return ValueOrError.Error;

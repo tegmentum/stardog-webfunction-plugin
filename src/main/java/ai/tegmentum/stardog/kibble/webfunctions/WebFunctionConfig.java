@@ -18,6 +18,14 @@ public final class WebFunctionConfig {
     public static final String PROP_ENGINE_PROVIDER  = "webfunctions.engine.provider";
     public static final String PROP_ENGINE_ID        = "webfunctions.engine.id";
 
+    // v0.3.0 host-callback config.
+    public static final String PROP_CALLBACK_MAX_DEPTH = "webfunctions.callback.max.depth";
+    public static final String PROP_CALLBACK_MAX_ROWS  = "webfunctions.callback.max.rows";
+    public static final String PROP_CALLBACK_ENABLED   = "webfunctions.callback.enabled";
+
+    public static final int DEFAULT_CALLBACK_MAX_DEPTH = 100;
+    public static final int DEFAULT_CALLBACK_MAX_ROWS  = 100_000;
+
     public static final String DEFAULT_ENGINE_PROVIDER = "wasmtime";
 
     public enum EngineMode { MODULE, COMPONENT }
@@ -81,6 +89,19 @@ public final class WebFunctionConfig {
             @Override public OptionalLong maxInstances()           { return maxInst; }
             @Override public OptionalLong maxExecutionTimeMillis() { return maxExecMs; }
         };
+    }
+
+    public static int callbackMaxDepth() {
+        return (int) getLong(PROP_CALLBACK_MAX_DEPTH).orElse(DEFAULT_CALLBACK_MAX_DEPTH);
+    }
+
+    public static int callbackMaxRows() {
+        return (int) getLong(PROP_CALLBACK_MAX_ROWS).orElse(DEFAULT_CALLBACK_MAX_ROWS);
+    }
+
+    public static boolean callbackEnabled() {
+        final String raw = System.getProperty(PROP_CALLBACK_ENABLED);
+        return raw == null || raw.isEmpty() || Boolean.parseBoolean(raw.trim());
     }
 
     private static OptionalLong getLong(final String key) {

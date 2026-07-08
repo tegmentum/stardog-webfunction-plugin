@@ -214,7 +214,61 @@ public class StardogWasmInstance implements Closeable {
                 } catch (IOException ioe) {
                     throw new RuntimeException(ioe);
                 }
-                this.instance = cached.instantiate(DefaultLinkingContext.builder().build());
+                final DefaultLinkingContext.Builder componentLinker = DefaultLinkingContext.builder();
+                if (WebFunctionConfig.callbackEnabled()) {
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.0#execute-query",
+                        HostCallbacks.executeQuery());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.0#callback-depth",
+                        HostCallbacks.callbackDepth());
+                    // v0.3.1 additive imports.
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.1#execute-query",
+                        HostCallbacks.executeQuery());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.1#callback-depth",
+                        HostCallbacks.callbackDepth());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.1#execute-update",
+                        HostCallbacks.executeUpdate());
+                    // v0.3.2 additive imports — prepared queries.
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.2#execute-query",
+                        HostCallbacks.executeQuery());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.2#callback-depth",
+                        HostCallbacks.callbackDepth());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.2#execute-update",
+                        HostCallbacks.executeUpdate());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.2#prepare-query",
+                        HostCallbacks.prepareQuery());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.2#run-prepared",
+                        HostCallbacks.runPrepared());
+                    // v0.3.3 additive imports.
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.3#execute-query",
+                        HostCallbacks.executeQuery());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.3#callback-depth",
+                        HostCallbacks.callbackDepth());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.3#execute-update",
+                        HostCallbacks.executeUpdate());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.3#prepare-query",
+                        HostCallbacks.prepareQuery());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.3#run-prepared",
+                        HostCallbacks.runPrepared());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.3.3#follow-predicate",
+                        HostCallbacks.followPredicate());
+                }
+                this.instance = cached.instantiate(componentLinker.build());
                 break;
             case MODULE:
             default:

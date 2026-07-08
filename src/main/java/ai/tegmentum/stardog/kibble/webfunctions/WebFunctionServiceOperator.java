@@ -70,6 +70,20 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
 
     @Override
     protected Solution computeNext() {
+        // Bind the ExecutionContext for the duration of this operator's
+        // stream so wf callbacks (execute-query, callback-depth) can reach
+        // the outer query's connection. This is the SERVICE-path bind;
+        // filter-function wf:call binds via Call.evaluate but without an
+        // ExecutionContext, so execute-query is unavailable on that path.
+        final CallbackContext cbCtx = CallbackContext.bind(mExecutionContext);
+        try {
+            return computeNextInternal();
+        } finally {
+            CallbackContext.unbindIfOutermost(cbCtx);
+        }
+    }
+
+    private Solution computeNextInternal() {
         if (mInputs == null) {
             // first call to compute results, perform some init
             // either use our child's solutions, or if we don't have a child, create a single solution to use
