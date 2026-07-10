@@ -179,6 +179,71 @@ public final class HostCallbacks {
         };
     }
 
+    /**
+     * v0.4 {@code invoke-wasm: func(url: string, args: list<value>)
+     * -> result<binding-sets, string>}.
+     *
+     * <p>Recursively invokes another wasm component identified by {@code url},
+     * with the caller-supplied positional {@code args}. The nested guest runs
+     * in a fresh {@link StardogWasmInstance} bound to the same MappingDictionary
+     * as the caller — {@link CallbackContext#dictionary()} is what makes that
+     * possible, so a v0.4 world guest linked against invoke-wasm must be called
+     * from a code path that binds the dictionary onto the callback context
+     * (see {@link Call#evaluate}).
+     *
+     * <p>The depth counter is bumped around the invocation so the host's
+     * recursion cap covers invoke-wasm chains, and a nested wf:call frame's
+     * execute-query still sees the correct current depth on return.
+     */
+    public static WitHostFunction invokeWasm() {
+        return args -> {
+            if (!WebFunctionConfig.callbackEnabled()) {
+                return new Object[] { ComponentVal.err(ComponentVal.string(
+                    "wf callback disabled by webfunctions.callback.enabled=false")) };
+            }
+            final CallbackContext ctx = CallbackContext.current();
+            if (ctx == null) {
+                return new Object[] { ComponentVal.err(ComponentVal.string(
+                    "wf callback: invoke-wasm has no context bound — nested guest "
+                    + "was reached from a code path that didn't bind CallbackContext")) };
+            }
+            if (ctx.dictionary() == null) {
+                return new Object[] { ComponentVal.err(ComponentVal.string(
+                    "wf callback: invoke-wasm needs the outer query's MappingDictionary "
+                    + "on the CallbackContext — bind with `bind(dictionary)` or "
+                    + "`bind(execCtx, dictionary)` at the top of the wf:call frame")) };
+            }
+            try {
+                final String url = ((ComponentVal) args[0]).asString();
+                final Value urlValue = Values.iri(url);
+
+                // Decode the WIT list<value> into Stardog Value[]. Same shape
+                // Call.java hands to StardogWasmInstance.evaluate — this is
+                // the identity path.
+                final ComponentVal argsList = (ComponentVal) args[1];
+                final List<ComponentVal> inner = argsList.asList();
+                final Value[] callArgs = new Value[inner.size()];
+                for (int i = 0; i < inner.size(); i++) {
+                    callArgs[i] = decodeNode(inner.get(i));
+                }
+
+                ctx.enter();
+                try (StardogWasmInstance instance =
+                        StardogWasmInstance.from(urlValue, ctx.dictionary())) {
+                    try (SelectQueryResult rs = instance.evaluate(callArgs)) {
+                        return new Object[] { ComponentVal.ok(
+                            encodeBindingSets(rs, ctx.maxRows())) };
+                    }
+                } finally {
+                    ctx.exit();
+                }
+            } catch (Exception e) {
+                return new Object[] { ComponentVal.err(ComponentVal.string(
+                    "invoke-wasm: " + (e.getMessage() == null ? e.toString() : e.getMessage()))) };
+            }
+        };
+    }
+
     /** {@code callback-depth: func() -> u32}. */
     public static WitHostFunction callbackDepth() {
         return args -> {

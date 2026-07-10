@@ -103,7 +103,13 @@ public final class Call extends AbstractExpression implements UserDefinedFunctio
                             // v0.3.0 host-callback context: nested wf:call reuses
                             // the outer binding; unbindIfOutermost clears only
                             // when this frame is the top of the stack.
-                            final CallbackContext cbCtx = CallbackContext.bind();
+                            // Pass the ValueSolution's MappingDictionary through
+                            // so the v0.4 `invoke-wasm` host import (which lands
+                            // inside a nested wf:call frame) can instantiate a
+                            // recursive StardogWasmInstance bound to the same
+                            // dictionary the caller is using.
+                            final CallbackContext cbCtx =
+                                CallbackContext.bind(valueSolution.getDictionary());
                             try (StardogWasmInstance stardogWasmInstance = StardogWasmInstance.from(values[0], valueSolution.getDictionary())) {
                                 try(final SelectQueryResult selectQueryResult = stardogWasmInstance.evaluate(Arrays.stream(values).skip(1).toArray(Value[]::new))) {
                                     return stardogWasmInstance.selectQueryResultToValueOrError(selectQueryResult);

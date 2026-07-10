@@ -38,6 +38,15 @@ public final class CallbackContext {
     private static final ThreadLocal<CallbackContext> CURRENT = new ThreadLocal<>();
 
     private final ExecutionContext executionContext;
+    /**
+     * The MappingDictionary the outer query is running against. Needed by
+     * the v0.4 {@code invoke-wasm} host import so a recursive wasm
+     * invocation can instantiate its own {@link StardogWasmInstance}
+     * bound to the same dictionary as the caller. Optional — filter-
+     * function wf:call passes it in via {@link #bind(MappingDictionary)},
+     * SERVICE wf:call via {@link #bind(ExecutionContext, MappingDictionary)}.
+     */
+    private final com.complexible.stardog.index.dictionary.MappingDictionary dictionary;
     private final int maxDepth;
     private final int maxRows;
     private int depth = 0;
@@ -51,15 +60,29 @@ public final class CallbackContext {
     private int nextHandle = 1;
 
     private CallbackContext(final ExecutionContext executionContext,
+                            final com.complexible.stardog.index.dictionary.MappingDictionary dictionary,
                             final int maxDepth,
                             final int maxRows) {
         this.executionContext = executionContext;
+        this.dictionary = dictionary;
         this.maxDepth = maxDepth;
         this.maxRows = maxRows;
     }
 
     /** Bind without a query context — sub-queries via execute-query unavailable. */
     public static CallbackContext bind() {
+        return bind((com.complexible.stardog.index.dictionary.MappingDictionary) null);
+    }
+
+    /**
+     * Bind with only the query's MappingDictionary — no ExecutionContext,
+     * so execute-query is unavailable but invoke-wasm can still resolve
+     * IRIs against the caller's dictionary. Used by filter-function
+     * {@link Call} which has access to the dictionary through
+     * ValueSolution but not to an ExecutionContext.
+     */
+    public static CallbackContext bind(
+            final com.complexible.stardog.index.dictionary.MappingDictionary dictionary) {
         final CallbackContext existing = CURRENT.get();
         // Preserve nested (mid-callback) contexts so depth stays consistent;
         // always replace outermost so a stale-from-prior-query context
@@ -67,6 +90,7 @@ public final class CallbackContext {
         if (existing != null && existing.depth > 0) return existing;
         final CallbackContext ctx = new CallbackContext(
                 null,
+                dictionary,
                 WebFunctionConfig.callbackMaxDepth(),
                 WebFunctionConfig.callbackMaxRows());
         CURRENT.set(ctx);
@@ -75,6 +99,17 @@ public final class CallbackContext {
 
     /** Bind with the outer query's {@link ExecutionContext}. */
     public static CallbackContext bind(final ExecutionContext executionContext) {
+        return bind(executionContext, executionContext == null ? null : executionContext.getMappings());
+    }
+
+    /**
+     * Bind with both an {@link ExecutionContext} and an explicit
+     * MappingDictionary. Used by the SERVICE path where the operator
+     * already has both handles in scope.
+     */
+    public static CallbackContext bind(
+            final ExecutionContext executionContext,
+            final com.complexible.stardog.index.dictionary.MappingDictionary dictionary) {
         final CallbackContext existing = CURRENT.get();
         // Preserve nested (mid-callback) contexts so depth stays consistent;
         // always replace outermost so a stale-from-prior-query context
@@ -82,10 +117,20 @@ public final class CallbackContext {
         if (existing != null && existing.depth > 0) return existing;
         final CallbackContext ctx = new CallbackContext(
                 executionContext,
+                dictionary,
                 WebFunctionConfig.callbackMaxDepth(),
                 WebFunctionConfig.callbackMaxRows());
         CURRENT.set(ctx);
         return ctx;
+    }
+
+    /**
+     * The MappingDictionary the outer query is running against, if any.
+     * v0.4 {@code invoke-wasm} needs this to construct a nested
+     * {@link StardogWasmInstance}; older host imports do not.
+     */
+    public com.complexible.stardog.index.dictionary.MappingDictionary dictionary() {
+        return dictionary;
     }
 
     public static void unbindIfOutermost(final CallbackContext ctx) {

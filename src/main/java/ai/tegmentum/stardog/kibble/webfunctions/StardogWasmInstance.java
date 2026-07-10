@@ -267,6 +267,33 @@ public class StardogWasmInstance implements Closeable {
                     componentLinker.addWitHostFunction(
                         "stardog:webfunction/host@0.3.3#follow-predicate",
                         HostCallbacks.followPredicate());
+                    // v0.4.0 additive imports — invoke-wasm unlocks portable
+                    // higher-order combinators (wf_apply.wasm, wf_map.wasm)
+                    // that build on top of wf:call. The other six imports
+                    // are identical to v0.3.3 and are re-registered against
+                    // the v0.4.0 interface instance name so guests targeting
+                    // v0.4 link cleanly.
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.4.0#execute-query",
+                        HostCallbacks.executeQuery());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.4.0#callback-depth",
+                        HostCallbacks.callbackDepth());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.4.0#execute-update",
+                        HostCallbacks.executeUpdate());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.4.0#prepare-query",
+                        HostCallbacks.prepareQuery());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.4.0#run-prepared",
+                        HostCallbacks.runPrepared());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.4.0#follow-predicate",
+                        HostCallbacks.followPredicate());
+                    componentLinker.addWitHostFunction(
+                        "stardog:webfunction/host@0.4.0#invoke-wasm",
+                        HostCallbacks.invokeWasm());
                 }
                 this.instance = cached.instantiate(componentLinker.build());
                 break;
