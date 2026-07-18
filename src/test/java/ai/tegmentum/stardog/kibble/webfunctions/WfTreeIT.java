@@ -44,7 +44,7 @@ public class WfTreeIT {
             "target/tegmentum-stardog-webfunction-1.0.3.jar");
     private static final String WASM_HOST_PATH = System.getProperty("wf.tree.wasm",
             System.getProperty("user.home")
-                    + "/git/tegmentum-webfunctions/target/wasm32-wasip1/release/wf_tree.wasm");
+                    + "/git/webfunctions/target/wasm32-wasip1/release/wf_tree.wasm");
 
     private static final String HAS_CHILD = "http://example.org/hasChild";
     private static final String A = "http://example.org/A";

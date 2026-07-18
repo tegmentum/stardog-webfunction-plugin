@@ -29,7 +29,7 @@ public class TestCallbackDepth {
 
     private static final String WASM = System.getProperty("wf.debug.callback.depth.wasm",
             System.getProperty("user.home")
-                    + "/git/tegmentum-webfunctions/target/wasm32-wasip1/release/debug_callback_depth.wasm");
+                    + "/git/webfunctions/target/wasm32-wasip1/release/debug_callback_depth.wasm");
 
     @Before
     public void enableComponentMode() {
@@ -48,7 +48,7 @@ public class TestCallbackDepth {
             throw new org.junit.AssumptionViolatedException(
                     "debug_callback_depth.wasm not built at " + wasm.getAbsolutePath()
                             + " — build via `cargo component build --release` in "
-                            + "tegmentum-webfunctions/crates/debug_callback_depth");
+                            + "webfunctions/crates/debug_callback_depth");
         }
 
         // The context binds ordinarily in Call.evaluate; for this direct
