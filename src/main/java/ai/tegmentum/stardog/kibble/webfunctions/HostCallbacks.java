@@ -252,6 +252,326 @@ public final class HostCallbacks {
         };
     }
 
+    // ---- tegmentum:webfunction/graph-callbacks@0.1.0 ------------------------
+
+    /**
+     * Base-substrate {@code tegmentum:webfunction/graph-callbacks@0.1.0#execute-query:
+     *  func(sparql: string) -> result<query-result, graph-call-error>}.
+     *
+     * <p>Bridges the base {@code tegmentum:webfunction} substrate WIT onto
+     * the existing {@link CallbackContext#executeSelect} executor. Distinct
+     * from {@link #executeQuery} — which speaks the legacy Stardog
+     * {@code stardog:webfunction/host} shape (three args, {@code binding-sets}
+     * record return) — this one accepts a single query string and returns
+     * the base {@code query-result} variant (bindings / quads / boolean arms).
+     *
+     * <p>MVP: unifies onto the {@code bindings} arm. SELECT results come
+     * through as a flat {@code list<binding>}; the base WIT's separate
+     * {@code quads} and {@code boolean} arms are a follow-up shape refinement.
+     *
+     * <p>Error surface maps every failure to {@code graph-call-error::backend-error}
+     * for MVP; {@code syntax-error} and {@code not-permitted} discrimination
+     * is a follow-up when we can distinguish parse-time from run-time
+     * failures cleanly.
+     */
+    public static WitHostFunction graphExecuteQuery() {
+        return args -> {
+            if (!WebFunctionConfig.callbackEnabled()) {
+                return new Object[] { ComponentVal.err(
+                    graphCallError("not-permitted",
+                        "wf callback disabled by webfunctions.callback.enabled=false")) };
+            }
+            final CallbackContext ctx = CallbackContext.current();
+            if (ctx == null) {
+                return new Object[] { ComponentVal.err(
+                    graphCallError("backend-error",
+                        "wf callback: no context bound")) };
+            }
+            try {
+                final String sparql = ((ComponentVal) args[0]).asString();
+                ctx.enter();
+                try (SelectQueryResult rs = ctx.executeSelect(sparql, new LinkedHashMap<>())) {
+                    final List<String> vars = rs.variables();
+                    final List<ComponentVal> bindings = new ArrayList<>();
+                    while (rs.hasNext()) {
+                        final BindingSet bs = rs.next();
+                        for (String var : vars) {
+                            final Value v = bs.get(var);
+                            if (v == null) continue;
+                            final Map<String, ComponentVal> bindingFields = new LinkedHashMap<>();
+                            bindingFields.put("variable", ComponentVal.string(var));
+                            bindingFields.put("value", encodeTermV1(v));
+                            bindings.add(ComponentVal.record(bindingFields));
+                        }
+                    }
+                    final ComponentVal queryResult = ComponentVal.variant(
+                        "bindings", ComponentVal.list(bindings));
+                    return new Object[] { ComponentVal.ok(queryResult) };
+                } finally {
+                    ctx.exit();
+                }
+            } catch (RuntimeException e) {
+                return new Object[] { ComponentVal.err(
+                    graphCallError("backend-error",
+                        e.getMessage() == null ? e.toString() : e.getMessage())) };
+            }
+        };
+    }
+
+    /**
+     * Base-substrate {@code tegmentum:webfunction/graph-callbacks@0.1.0#execute-update:
+     *  func(sparql: string) -> result<_, graph-call-error>}.
+     *
+     * <p>Bridges to {@link CallbackContext#executeUpdate} with the same error
+     * discrimination as {@link #graphExecuteQuery} — see its javadoc for the
+     * exception → variant mapping.
+     */
+    public static WitHostFunction graphExecuteUpdate() {
+        return args -> {
+            if (!WebFunctionConfig.callbackEnabled()) {
+                return new Object[] { ComponentVal.err(
+                    graphCallError("not-permitted",
+                        "wf callback disabled by webfunctions.callback.enabled=false")) };
+            }
+            final CallbackContext ctx = CallbackContext.current();
+            if (ctx == null) {
+                return new Object[] { ComponentVal.err(
+                    graphCallError("backend-error",
+                        "wf callback: no context bound")) };
+            }
+            try {
+                final String sparql = ((ComponentVal) args[0]).asString();
+                ctx.enter();
+                try {
+                    ctx.executeUpdate(sparql, new LinkedHashMap<>());
+                    return new Object[] { ComponentVal.ok(null) };
+                } finally {
+                    ctx.exit();
+                }
+            } catch (RuntimeException e) {
+                return new Object[] { ComponentVal.err(
+                    graphCallError("backend-error",
+                        e.getMessage() == null ? e.toString() : e.getMessage())) };
+            }
+        };
+    }
+
+    /** Build a {@code graph-call-error} variant value with the given arm and message. */
+    private static ComponentVal graphCallError(final String armName, final String message) {
+        return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
+
+    /**
+     * Encode a Stardog {@link Value} as the base {@code tegmentum:webfunction/types.term}
+     * variant (4 arms: named-node / blank-node / literal / triple). Distinct
+     * from the legacy {@link #encodeNode} — which produces the 3-arm
+     * {@code stardog:webfunction/host} {@code value} variant with the legacy
+     * literal record shape ({@code label} / {@code datatype: string} /
+     * {@code lang}).
+     *
+     * <p>Base literal record uses {@code value: string}, {@code datatype:
+     * option<iri>} (absent means xsd:string), and {@code language:
+     * option<string>}. RDF-star quoted triples raise — the executor path
+     * does not surface them today.
+     */
+    private static ComponentVal encodeTermV1(final Value v) {
+        if (v instanceof IRI) {
+            return ComponentVal.variant("named-node", ComponentVal.string(v.toString()));
+        }
+        if (v instanceof BNode) {
+            return ComponentVal.variant("blank-node", ComponentVal.string(((BNode) v).id()));
+        }
+        if (v instanceof Literal) {
+            final Literal lit = (Literal) v;
+            final String label = lit.label();
+            final String datatypeUri = lit.datatypeIRI() == null ? null : lit.datatypeIRI().toString();
+            final Optional<String> lang = lit.lang();
+            final Map<String, ComponentVal> fields = new LinkedHashMap<>();
+            fields.put("value", ComponentVal.string(label));
+            if (datatypeUri == null || datatypeUri.isEmpty()
+                    || XSD_STRING.equals(datatypeUri)) {
+                fields.put("datatype", ComponentVal.none());
+            } else {
+                fields.put("datatype", ComponentVal.some(ComponentVal.string(datatypeUri)));
+            }
+            fields.put("language", lang.isPresent()
+                    ? ComponentVal.some(ComponentVal.string(lang.get()))
+                    : ComponentVal.none());
+            return ComponentVal.variant("literal", ComponentVal.record(fields));
+        }
+        throw new IllegalArgumentException(
+            "wf graph-callbacks: unsupported Value kind for base-WIT term: " + v);
+    }
+
+    // ---- tegmentum:webfunction/http-callbacks@0.1.0 -------------------------
+
+    /**
+     * Base-substrate {@code tegmentum:webfunction/http-callbacks@0.1.0#http-get:
+     *  func(url: string, headers: list<http-header>) -> result<http-response, http-error>}.
+     *
+     * <p>Impl uses JDK-native {@code java.net.http.HttpClient} — no external
+     * HTTP dep needed. Header casing on the way in is preserved as-sent;
+     * response headers come back in the casing HttpClient returns (JDK
+     * canonicalises Http/1.1 headers to lowercase per RFC 7230 §3.2).
+     *
+     * <p>Error surface:
+     * <ul>
+     *   <li>Malformed URL / invalid header shape → {@code invalid-request}.</li>
+     *   <li>Non-2xx response → {@code status(u16)} — naked status code.</li>
+     *   <li>IOException / transport failure / interrupt → {@code network}.</li>
+     * </ul>
+     * A 2xx response returns {@code Ok(http-response)}.
+     */
+    public static WitHostFunction httpGet() {
+        return args -> {
+            try {
+                final String url = ((ComponentVal) args[0]).asString();
+                final List<ComponentVal> headers = ((ComponentVal) args[1]).asList();
+                return new Object[] { httpSend("GET", url, headers, null) };
+            } catch (RuntimeException e) {
+                return new Object[] { ComponentVal.err(httpError("invalid-request",
+                    e.getMessage() == null ? e.toString() : e.getMessage())) };
+            }
+        };
+    }
+
+    /**
+     * Base-substrate {@code tegmentum:webfunction/http-callbacks@0.1.0#http-post-json:
+     *  func(url: string, body: string, headers: list<http-header>)
+     *   -> result<http-response, http-error>}.
+     *
+     * <p>Adds a default {@code Content-Type: application/json} header when the
+     * caller does not supply one. Same error surface as {@link #httpGet}.
+     * Distinct method name ({@code httpPostJsonV1}) so it doesn't collide
+     * with any legacy {@code httpPostJson} that would return a
+     * {@code result<string, string>} shape.
+     */
+    public static WitHostFunction httpPostJsonV1() {
+        return args -> {
+            try {
+                final String url = ((ComponentVal) args[0]).asString();
+                final String body = ((ComponentVal) args[1]).asString();
+                final List<ComponentVal> headers = ((ComponentVal) args[2]).asList();
+                return new Object[] { httpSend("POST", url, headers, body) };
+            } catch (RuntimeException e) {
+                return new Object[] { ComponentVal.err(httpError("invalid-request",
+                    e.getMessage() == null ? e.toString() : e.getMessage())) };
+            }
+        };
+    }
+
+    private static ComponentVal httpSend(
+            final String method,
+            final String url,
+            final List<ComponentVal> headerRecords,
+            final String bodyOrNull) {
+        final java.net.URI uri;
+        try {
+            uri = java.net.URI.create(url);
+        } catch (IllegalArgumentException iae) {
+            return ComponentVal.err(httpError("invalid-request",
+                "url did not parse: " + iae.getMessage()));
+        }
+        final java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(30))
+                .build();
+        final java.net.http.HttpRequest.Builder builder = java.net.http.HttpRequest.newBuilder(uri)
+                .timeout(java.time.Duration.ofSeconds(30));
+
+        boolean sawContentType = false;
+        for (ComponentVal header : headerRecords) {
+            final Map<String, ComponentVal> fields = header.asRecord();
+            final String name = fields.get("name").asString();
+            final String value = fields.get("value").asString();
+            try {
+                builder.header(name, value);
+            } catch (IllegalArgumentException iae) {
+                return ComponentVal.err(httpError("invalid-request",
+                    "header rejected: " + iae.getMessage()));
+            }
+            if ("content-type".equalsIgnoreCase(name)) sawContentType = true;
+        }
+        if ("POST".equals(method)) {
+            if (!sawContentType) {
+                builder.header("Content-Type", "application/json");
+            }
+            builder.POST(java.net.http.HttpRequest.BodyPublishers.ofString(
+                bodyOrNull == null ? "" : bodyOrNull,
+                java.nio.charset.StandardCharsets.UTF_8));
+        } else {
+            builder.GET();
+        }
+        try {
+            final java.net.http.HttpResponse<String> response = client.send(
+                builder.build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString(java.nio.charset.StandardCharsets.UTF_8));
+            final int status = response.statusCode();
+            if (status < 200 || status >= 300) {
+                return ComponentVal.err(ComponentVal.variant("status", ComponentVal.u16(status)));
+            }
+            final List<ComponentVal> respHeaders = new ArrayList<>();
+            response.headers().map().forEach((k, vs) -> {
+                for (String v : vs) {
+                    final Map<String, ComponentVal> hf = new LinkedHashMap<>();
+                    hf.put("name", ComponentVal.string(k));
+                    hf.put("value", ComponentVal.string(v));
+                    respHeaders.add(ComponentVal.record(hf));
+                }
+            });
+            final Map<String, ComponentVal> respFields = new LinkedHashMap<>();
+            respFields.put("status", ComponentVal.u16(status));
+            respFields.put("headers", ComponentVal.list(respHeaders));
+            respFields.put("body", ComponentVal.string(response.body()));
+            return ComponentVal.ok(ComponentVal.record(respFields));
+        } catch (java.io.IOException ioe) {
+            return ComponentVal.err(httpError("network",
+                ioe.getMessage() == null ? ioe.toString() : ioe.getMessage()));
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            return ComponentVal.err(httpError("network", "interrupted"));
+        }
+    }
+
+    private static ComponentVal httpError(final String armName, final String message) {
+        return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
+
+    // ---- tegmentum:webfunction/wasm-callbacks@0.1.0 -------------------------
+
+    /**
+     * Base-substrate {@code tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm:
+     *  func(component-uri: string, function-name: string, args: list<term>)
+     *   -> result<term, wasm-call-error>}.
+     *
+     * <p>MVP: returns {@code wasm-call-error::not-permitted} with a descriptive
+     * message. Full sub-component composition on the JVM host is separate
+     * future work — the WIT surface is wired so guests importing this
+     * interface can link, but the actual dispatch table isn't populated yet.
+     */
+    public static WitHostFunction invokeWasmV1() {
+        return args -> new Object[] { ComponentVal.err(wasmCallError("not-permitted",
+            "invoke-wasm: not implemented on JVM host (MVP stub — full sub-component "
+            + "dispatch is future work)")) };
+    }
+
+    /**
+     * Base-substrate {@code tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm-service:
+     *  func(url: string, args: list<term>) -> result<list<binding>, wasm-call-error>}.
+     *
+     * <p>Property-function-shape counterpart to {@link #invokeWasmV1}. MVP is
+     * a {@code not-permitted} stub for the same reason: full JVM-host
+     * component composition is separate future work.
+     */
+    public static WitHostFunction invokeWasmService() {
+        return args -> new Object[] { ComponentVal.err(wasmCallError("not-permitted",
+            "invoke-wasm-service: not implemented on JVM host (MVP stub — full "
+            + "sub-component dispatch is future work)")) };
+    }
+
+    private static ComponentVal wasmCallError(final String armName, final String message) {
+        return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
+
     // ---- marshalling -------------------------------------------------------
 
     private static Map<String, Value> decodeBindings(final ComponentVal list) {

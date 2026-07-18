@@ -319,7 +319,58 @@ public class StardogWasmInstance implements Closeable {
                     componentLinker.addWitHostFunction(
                         "stardog:webfunction/host@0.4.0#invoke-wasm",
                         HostCallbacks.invokeWasm());
+                    // tegmentum:webfunction/graph-callbacks@0.1.0 —
+                    // base-substrate graph callback surface for guests
+                    // targeting `world extension-with-host-callbacks`.
+                    // Registered alongside the legacy
+                    // stardog:webfunction/host@0.3.x-0.4.0 imports so both
+                    // pre-migration guests (bare stardog imports) and
+                    // migrated guests (tegmentum:webfunction graph-callbacks)
+                    // link cleanly from the same StardogWasmInstance
+                    // construction. Signatures differ from the legacy shape:
+                    // execute-query takes one string (no bindings, no
+                    // max-rows) and returns `result<query-result,
+                    // graph-call-error>`; execute-update takes one string
+                    // and returns `result<_, graph-call-error>`. Error
+                    // discrimination lifts MalformedQuery onto syntax-error
+                    // and Shiro auth exceptions onto not-permitted, with
+                    // backend-error preserved as the default. Gated behind
+                    // the same webfunctions.callback.enabled knob as the
+                    // legacy family.
+                    componentLinker.addWitHostFunction(
+                        "tegmentum:webfunction/graph-callbacks@0.1.0#execute-query",
+                        HostCallbacks.graphExecuteQuery());
+                    componentLinker.addWitHostFunction(
+                        "tegmentum:webfunction/graph-callbacks@0.1.0#execute-update",
+                        HostCallbacks.graphExecuteUpdate());
                 }
+                // tegmentum:webfunction/http-callbacks@0.1.0 —
+                // outbound HTTP for guests reaching services outside SPARQL
+                // (vector-index endpoints, LLM inference, blob stores).
+                // Impl uses JDK-native java.net.http.HttpClient — no
+                // external HTTP dep needed. Registered outside the
+                // callback-enabled gate because the flag controls
+                // re-entering the graph; HTTP reaches external services.
+                componentLinker.addWitHostFunction(
+                    "tegmentum:webfunction/http-callbacks@0.1.0#http-get",
+                    HostCallbacks.httpGet());
+                componentLinker.addWitHostFunction(
+                    "tegmentum:webfunction/http-callbacks@0.1.0#http-post-json",
+                    HostCallbacks.httpPostJsonV1());
+                // tegmentum:webfunction/wasm-callbacks@0.1.0 —
+                // sub-component dispatch. MVP registers both invoke-wasm
+                // (scalar-return) and invoke-wasm-service (list<binding>-
+                // return) as not-permitted stubs so guests importing the
+                // interface can link. Full JVM-host component composition
+                // is separate future work; a guest that reaches these
+                // callbacks receives a typed policy denial with a
+                // descriptive message instead of a link-time trap.
+                componentLinker.addWitHostFunction(
+                    "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm",
+                    HostCallbacks.invokeWasmV1());
+                componentLinker.addWitHostFunction(
+                    "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm-service",
+                    HostCallbacks.invokeWasmService());
                 this.instance = cached.instantiate(
                         componentLinker.build(),
                         WebFunctionConfig.componentConfigFromSystemProperties());
