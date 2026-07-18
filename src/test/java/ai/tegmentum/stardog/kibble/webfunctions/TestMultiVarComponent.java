@@ -2,6 +2,7 @@ package ai.tegmentum.stardog.kibble.webfunctions;
 
 import com.stardog.stark.Literal;
 import com.stardog.stark.Value;
+import com.stardog.stark.Values;
 import com.stardog.stark.query.BindingSet;
 import com.stardog.stark.query.SelectQueryResult;
 import org.junit.After;
@@ -10,18 +11,24 @@ import org.junit.Test;
 
 import java.io.File;
 import java.net.URL;
-import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assume.assumeTrue;
 
 /**
- * Direct-instantiation test that the WIT {@code binding-sets} shape
- * (list of vars + list of rows, each row a list of bindings) round-trips
- * correctly for a multi-variable, multi-row component. The Stardog
- * {@link TestServiceQuery} tests only cover single-var single-row output;
- * this test exercises the shape actually declared by the WIT world.
+ * Direct-instantiation test that a multi-argument filter component
+ * round-trips through the sparql-extension world's
+ * {@code extension.call(name, args)} dispatch.
+ *
+ * <p>Pre-migration this test drove the flat {@code evaluate}
+ * export that returned multi-row multi-var binding-sets. The base
+ * {@code sparql-extension} filter interface returns a single {@code
+ * term}; the multi-row test surface belongs to the property-function
+ * interface (not covered here). {@code multi_var_component} was
+ * simplified to a two-arg {@code describe(label, upper)} filter that
+ * concatenates its arguments — enough to exercise the multi-argument
+ * call path end-to-end.
  */
 public class TestMultiVarComponent {
 
@@ -39,7 +46,7 @@ public class TestMultiVarComponent {
     }
 
     @Test
-    public void evaluateReturnsMultiVarMultiRowBindingSets() throws Exception {
+    public void describeConcatenatesTwoLiteralArgs() throws Exception {
         final File wasm = new File(COMPONENT_PATH);
         assumeTrue(
                 "multi_var_component.wasm not built: " + wasm.getAbsolutePath()
@@ -49,43 +56,16 @@ public class TestMultiVarComponent {
 
         final URL url = wasm.toURI().toURL();
         try (StardogWasmInstance instance = new StardogWasmInstance(url)) {
-            try (SelectQueryResult result = instance.evaluate()) {
-                final List<String> vars = result.variables();
-                assertThat(vars).containsExactly("label", "upper", "length");
-
+            try (SelectQueryResult result =
+                     instance.evaluate(Values.literal("stardog"), Values.literal("STARDOG"))) {
                 assertThat(result.hasNext()).isTrue();
-                assertRow(result.next(), "stardog", "STARDOG", "7",
-                        "http://www.w3.org/2001/XMLSchema#integer");
-
-                assertThat(result.hasNext()).isTrue();
-                assertRow(result.next(), "jena", "JENA", "4",
-                        "http://www.w3.org/2001/XMLSchema#integer");
-
+                final BindingSet row = result.next();
+                final Optional<Value> resultValue = row.value("value_0");
+                assertThat(resultValue).isPresent();
+                assertThat(resultValue.get()).isInstanceOf(Literal.class);
+                assertThat(((Literal) resultValue.get()).label()).isEqualTo("stardog=STARDOG");
                 assertThat(result.hasNext()).isFalse();
             }
         }
-    }
-
-    private static void assertRow(final BindingSet row,
-                                  final String expectedLabel,
-                                  final String expectedUpper,
-                                  final String expectedLengthLexical,
-                                  final String expectedLengthDatatype) {
-        final Optional<Value> label = row.value("label");
-        assertThat(label).isPresent();
-        assertThat(label.get()).isInstanceOf(Literal.class);
-        assertThat(((Literal) label.get()).label()).isEqualTo(expectedLabel);
-
-        final Optional<Value> upper = row.value("upper");
-        assertThat(upper).isPresent();
-        assertThat(upper.get()).isInstanceOf(Literal.class);
-        assertThat(((Literal) upper.get()).label()).isEqualTo(expectedUpper);
-
-        final Optional<Value> length = row.value("length");
-        assertThat(length).isPresent();
-        assertThat(length.get()).isInstanceOf(Literal.class);
-        final Literal lengthLit = (Literal) length.get();
-        assertThat(lengthLit.label()).isEqualTo(expectedLengthLexical);
-        assertThat(lengthLit.datatypeIRI().toString()).isEqualTo(expectedLengthDatatype);
     }
 }

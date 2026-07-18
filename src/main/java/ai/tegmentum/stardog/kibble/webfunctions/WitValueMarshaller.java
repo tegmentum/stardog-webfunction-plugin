@@ -176,7 +176,15 @@ public final class WitValueMarshaller {
                 .build();
     }
 
-    private static WitString witString(final String s) {
+    /**
+     * Wrap {@link WitString#of} to reroute its checked {@link
+     * ai.tegmentum.wasmtime4j.exception.ValidationException} to an
+     * {@link IllegalArgumentException}; the sparql-extension dispatch
+     * path in {@link StardogWasmInstance} passes function names and
+     * argument strings through here so it doesn't have to declare a
+     * wasmtime4j-internal checked exception on every call site.
+     */
+    static WitString witString(final String s) {
         try {
             return WitString.of(s);
         } catch (ai.tegmentum.wasmtime4j.exception.ValidationException e) {
@@ -249,6 +257,25 @@ public final class WitValueMarshaller {
         }
         // RDF 1.1: absent datatype + absent language ≡ xsd:string.
         return Values.literal(value);
+    }
+
+    /**
+     * Wrap a single {@code term} returned by {@code extension.call} or
+     * {@code aggregate-state.finish} into a {@link SelectQueryResult}
+     * carrying one row with a single binding under the well-known
+     * {@code value_0} variable name. The plugin's callers (Filter,
+     * Aggregate, Compose, Reduce, ...) still consume the module-mode
+     * {@link SelectQueryResult} shape; this keeps the sparql-extension
+     * component-mode dispatch a drop-in replacement without changing
+     * the plugin's higher-level ABI.
+     */
+    public SelectQueryResult singleTermToSelectQueryResult(final WitValue witValue) {
+        final Value value = valueFromWit(witValue);
+        final BindingSets.Builder bsb = BindingSets.builder();
+        bsb.add("value_0", value);
+        return new SelectQueryResultImpl(
+                Collections.singletonList("value_0"),
+                Collections.singletonList(bsb.build()));
     }
 
     public SelectQueryResult bindingSetsFromWit(final WitValue witValue) {

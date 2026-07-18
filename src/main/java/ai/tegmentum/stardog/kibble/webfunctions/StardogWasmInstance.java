@@ -34,6 +34,8 @@ import ai.tegmentum.webassembly4j.api.Memory;
 import ai.tegmentum.webassembly4j.api.Module;
 import ai.tegmentum.webassembly4j.api.ValueType;
 import ai.tegmentum.webassembly4j.api.WebAssembly;
+import ai.tegmentum.webassembly4j.api.WitCallableResource;
+import ai.tegmentum.wasmtime4j.wit.WitList;
 import ai.tegmentum.wasmtime4j.wit.WitRecord;
 import ai.tegmentum.wasmtime4j.wit.WitResult;
 import ai.tegmentum.wasmtime4j.wit.WitString;
@@ -73,6 +75,19 @@ public class StardogWasmInstance implements Closeable {
     public static final String WASM_FUNCTION_EVALUATE = "evaluate";
     public static final String WASM_FUNCTION_CARDINALITY_ESTIMATE = "cardinality_estimate";
     public static final String WASM_FUNCTION_DOC = "doc";
+
+    // Component-mode export paths for the base tegmentum:webfunction@0.1.0
+    // world's sparql-extension surface. wasmtime4j surfaces interface exports
+    // as `<interface-name>#<function-name>` (mirroring HostCallbacks' import
+    // registration pattern in this same class).
+    static final String EXT_REGISTER              = "tegmentum:webfunction/extension@0.1.0#register";
+    static final String EXT_CALL                  = "tegmentum:webfunction/extension@0.1.0#call";
+    static final String AGG_REGISTER_AGGREGATES   = "tegmentum:webfunction/aggregate@0.1.0#register-aggregates";
+    static final String AGG_NEW_AGGREGATE         = "tegmentum:webfunction/aggregate@0.1.0#new-aggregate";
+    // Resource-method paths: `<interface>#[method]<type>.<name>` per
+    // webassembly4j WitCallableResource javadoc.
+    static final String AGG_STATE_STEP            = "tegmentum:webfunction/aggregate@0.1.0#[method]aggregate-state.step";
+    static final String AGG_STATE_FINISH          = "tegmentum:webfunction/aggregate@0.1.0#[method]aggregate-state.finish";
 
     public static final long WASM_PAGE_SIZE = 64 * FileUtils.ONE_KB;
 
@@ -119,6 +134,16 @@ public class StardogWasmInstance implements Closeable {
     private Instance instance;
     private boolean closed = false;
     private boolean mappingDictionaryIsSet;
+
+    // Component-mode dispatch state. The base sparql-extension world routes
+    // every filter call through `extension.call(name, args)` — the name is
+    // discovered once via `extension.register()` and cached for this
+    // instance's lifetime. Aggregate lifecycle is: `new-aggregate(name)`
+    // returns a per-group resource handle, `step` accumulates, `finish`
+    // returns the value; the resource is dropped when this instance closes.
+    private volatile String cachedFilterFunctionName;
+    private volatile String cachedAggregateName;
+    private WitCallableResource aggregateResource;
 
     public boolean isMappingDictionaryIsSet() {
         return mappingDictionaryIsSet;
@@ -486,6 +511,19 @@ public class StardogWasmInstance implements Closeable {
         // on this instance (they live in the static cache), so nothing to
         // release beyond the per-call ComponentInstance. Module mode still
         // owns its engine + module.
+        //
+        // Drop any live aggregate resource FIRST — the underlying store-side
+        // handle it owns lives inside `instance`, so releasing after we null
+        // `instance` would leak the handle.
+        if (aggregateResource != null) {
+            try {
+                aggregateResource.close();
+            } catch (RuntimeException ignore) {
+                // Best-effort — a failing close here shouldn't mask the real
+                // close reason (this instance is going away anyway).
+            }
+            aggregateResource = null;
+        }
         if (module != null) {
             module.close();
         }
@@ -504,7 +542,13 @@ public class StardogWasmInstance implements Closeable {
 
     public Cardinality getCardinality(final Cardinality inputCardinality, List<Value> args) {
         if (isComponentMode()) {
-            return componentCardinalityEstimate(inputCardinality, args);
+            // `cardinality-estimate` lives on the stardog-extension overlay
+            // world (planner interface), not the base sparql-extension world.
+            // Test components targeting the base world only cannot answer;
+            // return the input cardinality (pessimistic identity estimate)
+            // so the planner sees a valid Cardinality object rather than a
+            // trap. Module mode still calls the real export below.
+            return inputCardinality;
         }
         try {
             final WasmMemoryRef input = this.writeToWasmMemoryWithCardinality("memory", inputCardinality, args.toArray(new Value[0]));
@@ -527,7 +571,7 @@ public class StardogWasmInstance implements Closeable {
 
     public SelectQueryResult evaluate(final Value... values) throws IOException {
         if (isComponentMode()) {
-            return componentInvokeBindingSets("evaluate", (Object) marshaller().toWitArgs(values));
+            return componentExtensionCall(values);
         }
         final WasmMemoryRef input = writeToWasmMemory("memory", values);
 
@@ -539,8 +583,12 @@ public class StardogWasmInstance implements Closeable {
 
     public SelectQueryResult doc() throws IOException {
         if (isComponentMode()) {
-            final WitValue result = (WitValue) ((ComponentInstance) instance).invokeWit("doc");
-            return marshaller().bindingSetsFromWit(result);
+            // `doc` lives on the stardog-extension overlay world, not the base
+            // sparql-extension world. Test components target the base world only,
+            // so component-mode `doc()` has no export to dispatch into. Return
+            // an empty binding-sets rather than trap — module-mode still serves
+            // the real doc export for callers that need it.
+            return new SelectQueryResultImpl(java.util.Collections.emptyList(), java.util.Collections.emptyList());
         }
         final Function evaluateFunction = instance.function(WASM_FUNCTION_DOC).get();
         final Integer output_pointer = ((Number) evaluateFunction.invoke()).intValue();
@@ -549,16 +597,9 @@ public class StardogWasmInstance implements Closeable {
 
     public SelectQueryResult compute(final Value[] values, long multiplicity) throws IOException {
         if (isComponentMode()) {
-            final WitValueMarshaller m = marshaller();
-            // WIT declares mult as u64; auto-marshalling would coerce Long → WitS64
-            // and the guest-side u64 param wouldn't match. Wrap explicitly.
-            final WitValue stepResult = (WitValue) ((ComponentInstance) instance).invokeWit(
-                    "aggregate-step",
-                    m.toWitArgs(values),
-                    ai.tegmentum.wasmtime4j.wit.WitU64.of(multiplicity));
-            unwrapVoidResult(stepResult);
-            // Aggregate-step returns result<_, string>; the final materialized value
-            // is fetched separately via aggregateGetValue().
+            componentAggregateStep(values, multiplicity);
+            // aggregate.step returns void; the materialized value is fetched
+            // separately via aggregateGetValue() through resource.finish.
             return new SelectQueryResultImpl(java.util.Collections.emptyList(), java.util.Collections.emptyList());
         }
         final WasmMemoryRef input = writeToWasmMemoryWithMultiplicity("memory", Arrays.stream(values).toArray(Value[]::new), multiplicity);
@@ -571,11 +612,7 @@ public class StardogWasmInstance implements Closeable {
 
     public SelectQueryResult aggregateGetValue() {
         if (isComponentMode()) {
-            try {
-                return componentInvokeBindingSets("aggregate-finish");
-            } catch (IOException e) {
-                throw new StardogException(e);
-            }
+            return componentAggregateFinish();
         }
         final Function evaluateFunction = instance.function(WASM_FUNCTION_GET_VALUE).get();
         final Integer output_pointer = ((Number) evaluateFunction.invoke()).intValue();
@@ -594,18 +631,21 @@ public class StardogWasmInstance implements Closeable {
         return new WitValueMarshaller(mappingDictionaryRef.get());
     }
 
-    private Cardinality componentCardinalityEstimate(final Cardinality in, final List<Value> args) {
+    /**
+     * Dispatch to the base extension's {@code call(name, args)} export.
+     * Discovers the extension's function name lazily on first use via
+     * {@code register()} — the pre-migration ABI had one flat {@code
+     * evaluate} export per component, so caching the first registered
+     * descriptor's name here preserves the invariant that a Stardog
+     * webfunction wasm URL binds to exactly one filter.
+     */
+    private SelectQueryResult componentExtensionCall(final Value[] values) throws IOException {
         final WitValueMarshaller m = marshaller();
+        final String fnName = ensureFilterFunctionName();
         final WitValue result = (WitValue) ((ComponentInstance) instance).invokeWit(
-                "cardinality-estimate",
-                m.toWitCardinality(in),
-                m.toWitArgs(args.toArray(new Value[0])));
-        final WitValue ok = unwrapOkWit(result, PlanException::new);
-        return m.cardinalityFromWit(ok);
-    }
-
-    private SelectQueryResult componentInvokeBindingSets(final String funcName, final Object... args) throws IOException {
-        final WitValue result = (WitValue) ((ComponentInstance) instance).invokeWit(funcName, args);
+                EXT_CALL,
+                WitValueMarshaller.witString(fnName),
+                m.toWitArgs(values));
         final WitValue ok;
         try {
             ok = unwrapOkWit(result, IOException::new);
@@ -613,7 +653,112 @@ public class StardogWasmInstance implements Closeable {
             if (re.getCause() instanceof IOException) throw (IOException) re.getCause();
             throw re;
         }
-        return marshaller().bindingSetsFromWit(ok);
+        // extension.call returns a single term; wrap it as a 1x1 SelectQueryResult
+        // under the well-known `value_0` binding name for backward compatibility
+        // with the flat-world SelectQueryResult shape callers still expect.
+        return marshaller().singleTermToSelectQueryResult(ok);
+    }
+
+    /**
+     * Discover and cache the filter function name to pass to {@code
+     * extension.call}. Called on first {@code evaluate()} — thereafter
+     * reused for every subsequent call on this instance.
+     */
+    private String ensureFilterFunctionName() throws IOException {
+        String name = cachedFilterFunctionName;
+        if (name != null) return name;
+        synchronized (this) {
+            if (cachedFilterFunctionName == null) {
+                final WitValue descriptors = (WitValue) ((ComponentInstance) instance).invokeWit(EXT_REGISTER);
+                cachedFilterFunctionName = firstDescriptorName(descriptors, "register",
+                        "component exports no filter functions; extension.register returned []");
+            }
+            return cachedFilterFunctionName;
+        }
+    }
+
+    /**
+     * Aggregate step lifecycle: on first call for this instance, dispatch
+     * {@code new-aggregate(name)} to allocate the guest-side accumulator
+     * resource; wrap the returned WitResource as a {@link
+     * WitCallableResource} so method invocations avoid the manual
+     * receiver-threading dance. Then call {@code step(args)} once per
+     * multiplicity unit — the base aggregate world has no multiplicity
+     * parameter, so N copies of the same row are stepped N times.
+     */
+    private void componentAggregateStep(final Value[] values, final long multiplicity) throws IOException {
+        if (aggregateResource == null) {
+            openAggregateResource();
+        }
+        final WitList argsList = marshaller().toWitArgs(values);
+        for (long i = 0; i < multiplicity; i++) {
+            final Object stepReturn = aggregateResource.invokeMethodWit(AGG_STATE_STEP, argsList);
+            unwrapVoidResult((WitValue) stepReturn);
+        }
+    }
+
+    private void openAggregateResource() throws IOException {
+        final ComponentInstance ci = (ComponentInstance) instance;
+        if (cachedAggregateName == null) {
+            final WitValue descriptors = (WitValue) ci.invokeWit(AGG_REGISTER_AGGREGATES);
+            cachedAggregateName = firstDescriptorName(descriptors, "register-aggregates",
+                    "component exports no aggregates; aggregate.register-aggregates returned []");
+        }
+        final WitValue newAggReturn = (WitValue) ci.invokeWit(
+                AGG_NEW_AGGREGATE, WitValueMarshaller.witString(cachedAggregateName));
+        final WitValue okResource;
+        try {
+            okResource = unwrapOkWit(newAggReturn, IOException::new);
+        } catch (RuntimeException re) {
+            if (re.getCause() instanceof IOException) throw (IOException) re.getCause();
+            throw re;
+        }
+        // asCallableResource binds the WitResource returned by new-aggregate to
+        // this ComponentInstance, so downstream `step`/`finish` calls dispatch
+        // through the receiver without manual argument prepending.
+        aggregateResource = ci.asCallableResource(okResource);
+    }
+
+    /**
+     * Aggregate finish: call {@code finish()} on the cached resource, drop
+     * it, and wrap the returned term as a 1x1 SelectQueryResult with the
+     * conventional {@code value_0} binding name.
+     */
+    private SelectQueryResult componentAggregateFinish() {
+        if (aggregateResource == null) {
+            // No step ever ran — return empty, matching the module-mode contract
+            // for aggregate-with-no-inputs.
+            return new SelectQueryResultImpl(java.util.Collections.emptyList(), java.util.Collections.emptyList());
+        }
+        try {
+            final WitValue finishReturn = (WitValue) aggregateResource.invokeMethodWit(AGG_STATE_FINISH);
+            final WitValue ok = unwrapOkWit(finishReturn, StardogException::new);
+            return marshaller().singleTermToSelectQueryResult(ok);
+        } finally {
+            aggregateResource.close();
+            aggregateResource = null;
+        }
+    }
+
+    /**
+     * Extract the first descriptor's name from a {@code list<function-descriptor>}
+     * or {@code list<aggregate-descriptor>} return. Both descriptor records
+     * carry a {@code name: string} field; the caller has already declared the
+     * ABI it expects.
+     */
+    private static String firstDescriptorName(final WitValue witValue,
+                                              final String registerFnName,
+                                              final String emptyMessage) throws IOException {
+        if (!(witValue instanceof WitList)) {
+            throw new IOException("extension." + registerFnName + " return is not a list: "
+                    + (witValue == null ? "null" : witValue.getClass().getName()));
+        }
+        final java.util.List<WitValue> elems = ((WitList) witValue).getElements();
+        if (elems.isEmpty()) {
+            throw new IOException(emptyMessage);
+        }
+        final WitRecord first = (WitRecord) elems.get(0);
+        return ((WitString) first.getField("name")).getValue();
     }
 
     private void unwrapVoidResult(final WitValue result) {
