@@ -1,0 +1,6 @@
+[submodule "src/main/wit/base"]
+	path = src/main/wit/base
+	url = /Users/zacharywhitley/git/webfunction-wit
+[submodule "src/main/wit/overlay"]
+	path = src/main/wit/overlay
+	url = /Users/zacharywhitley/git/stardog-webfunction-wit
