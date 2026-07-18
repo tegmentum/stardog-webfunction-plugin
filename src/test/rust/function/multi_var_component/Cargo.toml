@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 wit-bindgen = "0.36"
 
 [package.metadata.component]
-package = "stardog:webfunction-multi-var"
+package = "stardog:webfunction-test-multi-var"
 
 [package.metadata.component.target]
 path = "wit"

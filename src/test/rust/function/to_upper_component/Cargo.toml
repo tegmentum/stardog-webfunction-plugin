@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 wit-bindgen = "0.36"
 
 [package.metadata.component]
-package = "stardog:webfunction-to-upper"
+package = "stardog:webfunction-test-to-upper"
 
 [package.metadata.component.target]
 path = "wit"

@@ -1,28 +1,58 @@
-package stardog:webfunction@0.2.0;
+// Test-only WIT world mirroring the type shapes of the base
+// tegmentum:webfunction@0.1.0 (see submodule wit/base/) and Stardog
+// overlay stardog:webfunction@0.3.0 (see submodule wit/overlay/).
+//
+// The world's flat exports (evaluate / aggregate-step / aggregate-finish
+// / cardinality-estimate / doc) preserve the dispatch surface
+// StardogWasmInstance currently drives; the full sparql-extension world
+// migration (extension.call + aggregate resource lifecycle) is deferred
+// because it requires resource-handle plumbing in the Java-side
+// webassembly4j API that has not yet been designed.
+//
+// Type-level changes carried over from the base+overlay WIT:
+//   * `value` → `term` (adds `triple(quoted-triple)` arm)
+//   * `literal.label` → `literal.value`
+//   * `literal.lang` → `literal.language`
+//   * `literal.datatype` typed `option<iri>` (nullable)
+//   * `binding.name` → `binding.variable`
+package stardog:webfunction-test@0.3.0;
 
 interface types {
-    variant value {
-        iri(string),
-        literal(literal),
-        bnode(string),
-    }
+    type iri = string;
 
     record literal {
-        label: string,
-        datatype: string,
-        lang: option<string>,
+        value: string,
+        datatype: option<iri>,
+        language: option<string>,
+    }
+
+    variant flat-term {
+        named-node(iri),
+        blank-node(string),
+        literal(literal),
+    }
+
+    record quoted-triple {
+        subject: flat-term,
+        predicate: flat-term,
+        object: flat-term,
+    }
+
+    variant term {
+        named-node(iri),
+        blank-node(string),
+        literal(literal),
+        triple(quoted-triple),
     }
 
     record binding {
-        name: string,
-        value: value,
+        variable: string,
+        value: term,
     }
-
-    type binding-set = list<binding>;
 
     record binding-sets {
         vars: list<string>,
-        rows: list<binding-set>,
+        rows: list<list<binding>>,
     }
 
     enum accuracy {
@@ -43,11 +73,11 @@ interface types {
 }
 
 world webfunction {
-    use types.{value, binding-sets, cardinality};
+    use types.{term, binding-sets, cardinality};
 
-    export evaluate: func(args: list<value>) -> result<binding-sets, string>;
-    export aggregate-step: func(args: list<value>, mult: u64) -> result<_, string>;
+    export evaluate: func(args: list<term>) -> result<binding-sets, string>;
+    export aggregate-step: func(args: list<term>, mult: u64) -> result<_, string>;
     export aggregate-finish: func() -> result<binding-sets, string>;
-    export cardinality-estimate: func(input: cardinality, args: list<value>) -> result<cardinality, string>;
+    export cardinality-estimate: func(input: cardinality, args: list<term>) -> result<cardinality, string>;
     export doc: func() -> binding-sets;
 }

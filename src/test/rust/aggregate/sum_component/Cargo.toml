@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 wit-bindgen = "0.36"
 
 [package.metadata.component]
-package = "stardog:webfunction-sum"
+package = "stardog:webfunction-test-sum"
 
 [package.metadata.component.target]
 path = "wit"
