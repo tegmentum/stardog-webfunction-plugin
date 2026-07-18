@@ -1,5 +1,6 @@
 package ai.tegmentum.stardog.kibble.webfunctions;
 
+import ai.tegmentum.wasmtime4j.wit.WitFloat32;
 import ai.tegmentum.wasmtime4j.wit.WitList;
 import ai.tegmentum.wasmtime4j.wit.WitOption;
 import ai.tegmentum.wasmtime4j.wit.WitRecord;
@@ -338,4 +339,126 @@ public final class WitValueMarshaller {
 
     @SuppressWarnings("unused")
     private static final List<WitValue> EMPTY_VALUE_LIST = Collections.emptyList();
+
+    // ---- well-known-exports return marshalling -------------------------------
+    //
+    // Guests exporting `tegmentum:webfunction/search@0.1.0` and
+    // `tegmentum:webfunction/embed@0.1.0` return `list<search-hit>` and
+    // `list<f32>` respectively — shapes outside the substrate's
+    // binding-sets envelope. The two helpers below decode those returns
+    // into Java shapes the plugin's callers can hand back to Stardog's
+    // planner / property-function dispatch.
+
+    /**
+     * One search-hit as decoded from a
+     * {@code tegmentum:webfunction/search@0.1.0} guest return.
+     *
+     * <p>Fields mirror the WIT {@code search-hit} record:
+     * {@code subject: term}, {@code score: f64}, {@code snippet: option<string>}.
+     * The WIT declares {@code score: f64} even though the task memo names
+     * {@code f32} — we follow the current WIT and accept either wire type
+     * on read (WitFloat32 up-casts to double).
+     */
+    public static final class SearchHit {
+        public final Value subject;
+        public final double score;
+        public final Optional<String> snippet;
+
+        public SearchHit(final Value subject, final double score, final Optional<String> snippet) {
+            this.subject = subject;
+            this.score = score;
+            this.snippet = snippet;
+        }
+    }
+
+    /**
+     * Unmarshal a WIT {@code list<search-hit>} return value into a
+     * {@code List<SearchHit>}. Called on the result of a guest exporting
+     * {@code tegmentum:webfunction/search@0.1.0#search}.
+     *
+     * <p>Each hit is a record with fields {@code subject: term},
+     * {@code score: f64}, and {@code snippet: option<string>}. Accepts a
+     * {@link WitFloat32} score as well as {@link WitFloat64} so a guest
+     * that emits f32 (the task memo shape) still decodes cleanly.
+     *
+     * @throws IllegalArgumentException if the value shape doesn't match
+     */
+    public List<SearchHit> unmarshalSearchHits(final WitValue witValue) {
+        if (!(witValue instanceof WitList)) {
+            throw new IllegalArgumentException(
+                "search return is not a list: "
+                + (witValue == null ? "null" : witValue.getClass().getName()));
+        }
+        final List<WitValue> elements = ((WitList) witValue).getElements();
+        final List<SearchHit> hits = new ArrayList<>(elements.size());
+        for (WitValue hitVal : elements) {
+            if (!(hitVal instanceof WitRecord)) {
+                throw new IllegalArgumentException(
+                    "search-hit element is not a record: "
+                    + hitVal.getClass().getName());
+            }
+            final WitRecord hit = (WitRecord) hitVal;
+            final WitValue subjectField = hit.getField("subject");
+            if (subjectField == null) {
+                throw new IllegalArgumentException("search-hit record missing `subject` field");
+            }
+            final Value subject = valueFromWit(subjectField);
+            final double score = readF32OrF64(hit.getField("score"), "search-hit.score");
+            final Optional<String> snippet = readOptionalString(hit.getField("snippet"));
+            hits.add(new SearchHit(subject, score, snippet));
+        }
+        return hits;
+    }
+
+    /**
+     * Unmarshal a WIT {@code list<f32>} return value into a
+     * {@code List<Float>}. Called on the result of a guest exporting
+     * {@code tegmentum:webfunction/embed@0.1.0#embed}. Also accepts
+     * {@link WitFloat64} elements for guests that emit f64 vectors.
+     *
+     * @throws IllegalArgumentException if the value shape doesn't match
+     */
+    public List<Float> unmarshalF32Vector(final WitValue witValue) {
+        if (!(witValue instanceof WitList)) {
+            throw new IllegalArgumentException(
+                "embed return is not a list: "
+                + (witValue == null ? "null" : witValue.getClass().getName()));
+        }
+        final List<WitValue> elements = ((WitList) witValue).getElements();
+        final List<Float> out = new ArrayList<>(elements.size());
+        for (WitValue elem : elements) {
+            if (elem instanceof WitFloat32) {
+                out.add(((WitFloat32) elem).getValue());
+            } else if (elem instanceof WitFloat64) {
+                out.add((float) ((WitFloat64) elem).getValue());
+            } else {
+                throw new IllegalArgumentException(
+                    "embed vector element is not an f32/f64: " + elem.getClass().getName());
+            }
+        }
+        return out;
+    }
+
+    private static double readF32OrF64(final WitValue v, final String context) {
+        if (v == null) throw new IllegalArgumentException(context + " missing");
+        if (v instanceof WitFloat64) return ((WitFloat64) v).getValue();
+        if (v instanceof WitFloat32) return (double) ((WitFloat32) v).getValue();
+        throw new IllegalArgumentException(context + " is not an f32/f64: " + v.getClass().getName());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Optional<String> readOptionalString(final WitValue v) {
+        if (v == null) return Optional.empty();
+        if (!(v instanceof WitOption)) {
+            throw new IllegalArgumentException(
+                "expected option<string> but got " + v.getClass().getName());
+        }
+        final Optional<Object> inner = ((WitOption) v).toJava();
+        if (inner.isEmpty()) return Optional.empty();
+        final Object raw = inner.get();
+        if (raw instanceof String) return Optional.of((String) raw);
+        if (raw instanceof WitString) return Optional.of(((WitString) raw).getValue());
+        throw new IllegalArgumentException(
+            "option<string> payload not a string: " + raw.getClass().getName());
+    }
 }
