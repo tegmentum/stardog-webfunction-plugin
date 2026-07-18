@@ -295,7 +295,9 @@ public class StardogWasmInstance implements Closeable {
                         "stardog:webfunction/host@0.4.0#invoke-wasm",
                         HostCallbacks.invokeWasm());
                 }
-                this.instance = cached.instantiate(componentLinker.build());
+                this.instance = cached.instantiate(
+                        componentLinker.build(),
+                        WebFunctionConfig.componentConfigFromSystemProperties());
                 break;
             case MODULE:
             default:

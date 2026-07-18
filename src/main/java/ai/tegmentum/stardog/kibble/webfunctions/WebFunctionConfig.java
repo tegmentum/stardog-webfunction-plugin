@@ -1,5 +1,6 @@
 package ai.tegmentum.stardog.kibble.webfunctions;
 
+import ai.tegmentum.webassembly4j.api.config.ComponentConfig;
 import ai.tegmentum.webassembly4j.api.config.ResourceLimits;
 import ai.tegmentum.webassembly4j.api.config.WebAssemblyConfig;
 import ai.tegmentum.webassembly4j.provider.wasmtime.config.WasmtimeConfig;
@@ -74,6 +75,30 @@ public final class WebFunctionConfig {
                     .build());
         }
 
+        return builder.build();
+    }
+
+    /**
+     * Build a {@link ComponentConfig} from the same
+     * {@code webfunctions.*} system properties {@link
+     * #resourceLimitsFromSystemProperties()} reads, so the per-component
+     * ceiling (memory / fuel / table-elements) applied at instantiation
+     * time matches the engine-level limits.
+     *
+     * <p>Wasmtime enforces the memory ceiling at
+     * component-instantiation time rather than at engine level: the
+     * host must pass a {@code ComponentConfig} with
+     * {@code maxMemoryBytes(...)} for the guest's linear-memory grow
+     * to trap at the configured page count. Component tests that
+     * exercise memory-hungry paths depend on this ceiling being set
+     * per instance.
+     */
+    public static ComponentConfig componentConfigFromSystemProperties() {
+        final ComponentConfig.Builder builder = ComponentConfig.builder();
+        getLong(PROP_MAX_MEMORY_BYTES).ifPresent(builder::maxMemoryBytes);
+        getLong(PROP_FUEL_LIMIT).ifPresent(builder::fuelLimit);
+        getLong(PROP_MAX_TABLE_ELEMS).ifPresent(builder::maxTableElements);
+        getLong(PROP_MAX_INSTANCES).ifPresent(builder::maxInstances);
         return builder.build();
     }
 
