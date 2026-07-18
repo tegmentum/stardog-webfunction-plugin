@@ -269,10 +269,16 @@ public final class HostCallbacks {
      * through as a flat {@code list<binding>}; the base WIT's separate
      * {@code quads} and {@code boolean} arms are a follow-up shape refinement.
      *
-     * <p>Error surface maps every failure to {@code graph-call-error::backend-error}
-     * for MVP; {@code syntax-error} and {@code not-permitted} discrimination
-     * is a follow-up when we can distinguish parse-time from run-time
-     * failures cleanly.
+     * <p>Error discrimination:
+     * <ul>
+     *   <li>Callback disabled → {@code not-permitted}.</li>
+     *   <li>Parse failure ({@link com.stardog.stark.query.MalformedQuery},
+     *       possibly wrapped in a RuntimeException by
+     *       {@link CallbackContext}) → {@code syntax-error}.</li>
+     *   <li>{@link SecurityException} or Shiro {@code AuthorizationException}
+     *       / {@code AuthenticationException} → {@code not-permitted}.</li>
+     *   <li>Everything else → {@code backend-error}.</li>
+     * </ul>
      */
     public static WitHostFunction graphExecuteQuery() {
         return args -> {
@@ -311,9 +317,7 @@ public final class HostCallbacks {
                     ctx.exit();
                 }
             } catch (RuntimeException e) {
-                return new Object[] { ComponentVal.err(
-                    graphCallError("backend-error",
-                        e.getMessage() == null ? e.toString() : e.getMessage())) };
+                return new Object[] { ComponentVal.err(discriminateGraphError(e)) };
             }
         };
     }
@@ -349,9 +353,7 @@ public final class HostCallbacks {
                     ctx.exit();
                 }
             } catch (RuntimeException e) {
-                return new Object[] { ComponentVal.err(
-                    graphCallError("backend-error",
-                        e.getMessage() == null ? e.toString() : e.getMessage())) };
+                return new Object[] { ComponentVal.err(discriminateGraphError(e)) };
             }
         };
     }
@@ -359,6 +361,44 @@ public final class HostCallbacks {
     /** Build a {@code graph-call-error} variant value with the given arm and message. */
     private static ComponentVal graphCallError(final String armName, final String message) {
         return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
+
+    /**
+     * Map a caught {@link RuntimeException} to the appropriate
+     * {@code graph-call-error} variant. Parse-time exceptions
+     * ({@link com.stardog.stark.query.MalformedQuery}, wrapped or not) map to
+     * {@code syntax-error}; security failures map to {@code not-permitted};
+     * every other runtime failure lands on {@code backend-error} (the
+     * preserved MVP default).
+     *
+     * <p>{@link CallbackContext} wraps MalformedQuery in a RuntimeException
+     * before it escapes, so we walk the cause chain to catch it. Shiro's
+     * {@code AuthorizationException} isn't a Java {@link SecurityException},
+     * so we match by class-name suffix rather than take a compile-time dep
+     * on shiro-core just for this discrimination.
+     */
+    private static ComponentVal discriminateGraphError(final RuntimeException e) {
+        final String msg = e.getMessage() == null ? e.toString() : e.getMessage();
+        Throwable cur = e;
+        int hops = 0;
+        while (cur != null && hops < 8) {
+            if (cur instanceof com.stardog.stark.query.MalformedQuery) {
+                final String parseMsg = cur.getMessage() == null ? cur.toString() : cur.getMessage();
+                return graphCallError("syntax-error", parseMsg);
+            }
+            if (cur instanceof SecurityException) {
+                final String secMsg = cur.getMessage() == null ? cur.toString() : cur.getMessage();
+                return graphCallError("not-permitted", secMsg);
+            }
+            final String cn = cur.getClass().getName();
+            if (cn.endsWith("AuthorizationException") || cn.endsWith("AuthenticationException")) {
+                final String secMsg = cur.getMessage() == null ? cur.toString() : cur.getMessage();
+                return graphCallError("not-permitted", secMsg);
+            }
+            cur = cur.getCause();
+            hops++;
+        }
+        return graphCallError("backend-error", msg);
     }
 
     /**
