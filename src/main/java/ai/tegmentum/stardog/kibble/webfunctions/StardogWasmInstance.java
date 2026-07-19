@@ -42,8 +42,11 @@ import ai.tegmentum.wasmtime4j.wit.WitString;
 import ai.tegmentum.wasmtime4j.wit.WitValue;
 import com.complexible.stardog.security.ActionType;
 import com.complexible.stardog.security.ShiroUtils;
+import com.complexible.stardog.security.StardogAuthorizationException;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.shiro.SecurityUtils;
+import org.apache.shiro.subject.Subject;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -220,6 +223,33 @@ public class StardogWasmInstance implements Closeable {
         ShiroUtils.require(ActionType.EXECUTE, WebFunctionResourceType.INSTANCE, wasmUrl.toString());
     }
 
+    /**
+     * Capture the invoker's Shiro subject at instantiation for Phase 4
+     * {@code ShiroUtils.executeAs} wrapping in {@link HostCallbacks}.
+     * Returns null when no authenticated subject is bound (unit tests,
+     * embedded direct-instantiation, misconfigured server), mirroring
+     * the defensive shape of {@link FuelContext#extract} and
+     * {@link CapabilityEnforcer#currentSubjectOrNull()} — a broken auth
+     * path must not take down the invocation. The per-callback wrap
+     * then consults {@link WebFunctionConfig#getAnonymousPolicy()} to
+     * decide whether to deny the anonymous invocation, permit the
+     * ambient-credential fall-through, or inherit.
+     */
+    private static Subject currentInvokerSubjectOrNull() {
+        try {
+            final Subject s = SecurityUtils.getSubject();
+            if (s == null || s.getPrincipal() == null) return null;
+            return s;
+        } catch (StardogAuthorizationException noSubject) {
+            return null;
+        } catch (RuntimeException ignore) {
+            // Any other Shiro/Stardog runtime error resolving the
+            // subject falls back to anonymous so a broken auth path
+            // doesn't take down the invocation.
+            return null;
+        }
+    }
+
     public StardogWasmInstance(final URL wasmURL, final MappingDictionary mappingDictionary) throws ExecutionException {
         this(wasmURL);
         this.setMappingDictionary(mappingDictionary);
@@ -258,7 +288,16 @@ public class StardogWasmInstance implements Closeable {
                 if (enforcer.isPresent()) {
                     final CallbackContext preCtx = CallbackContext.current();
                     grant = enforcer.get().preInvocation(cached, wasmUrl);
-                    if (preCtx != null) preCtx.setCapabilityGrant(grant);
+                    if (preCtx != null) {
+                        preCtx.setCapabilityGrant(grant);
+                        // Phase 4 — capture the invoker's Shiro subject so
+                        // HostCallbacks can wrap Stardog operations in
+                        // ShiroUtils.executeAs(subject, ...). Null when
+                        // the invoker is anonymous; the per-callback wrap
+                        // consults webfunctions.capability.anonymous-policy
+                        // to decide the fallback.
+                        preCtx.setInvokerSubject(currentInvokerSubjectOrNull());
+                    }
                 } else {
                     grant = null;
                 }
