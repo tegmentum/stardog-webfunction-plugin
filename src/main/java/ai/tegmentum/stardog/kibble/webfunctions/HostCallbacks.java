@@ -4,6 +4,7 @@ import ai.tegmentum.wasmtime4j.component.ComponentVal;
 import ai.tegmentum.wasmtime4j.component.ComponentVariant;
 import ai.tegmentum.webassembly4j.api.WitHostFunction;
 
+import com.complexible.stardog.security.ShiroUtils;
 import com.stardog.stark.BNode;
 import com.stardog.stark.IRI;
 import com.stardog.stark.Literal;
@@ -11,6 +12,7 @@ import com.stardog.stark.Value;
 import com.stardog.stark.Values;
 import com.stardog.stark.query.BindingSet;
 import com.stardog.stark.query.SelectQueryResult;
+import org.apache.shiro.subject.Subject;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -18,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * Host callbacks satisfying the v0.3.0 WIT world's {@code host} import
@@ -55,6 +58,71 @@ public final class HostCallbacks {
         if (enforcer.isEmpty()) return;
         final CapabilityGrant grant = ctx.capabilityGrant().orElse(null);
         enforcer.get().perCallback(ctx, grant, interfaceName, method, argsSummary);
+    }
+
+    /**
+     * Capability-policy Phase 4 — invoker-subject wrap. Runs the given
+     * Stardog-touching body under {@code ShiroUtils.executeAs(invokerSubject,
+     * ...)} so Stardog's own permission checks (graph ACLs, database
+     * ACLs, named-graph permissions) fire for the invoker's identity
+     * rather than the plugin's ambient credential.
+     *
+     * <p>Gated behind {@link CapabilityEnforcer#activePolicy}: when
+     * capability enforcement is off (default), the body runs directly
+     * — pre-Phase-4 behavior preserved, no ShiroUtils.executeAs calls
+     * fire.
+     *
+     * <p>When capability is on but no invoker subject was captured
+     * (anonymous), consults {@link WebFunctionConfig#getAnonymousPolicy}:
+     * <ul>
+     *   <li>{@code deny} → throw
+     *       {@link WfCapabilityError.PerCallDenied} with reason
+     *       {@code permission-denied} before the body runs.</li>
+     *   <li>{@code permit} / {@code inherit} → run the body under the
+     *       plugin's ambient credential (current pre-Phase-4 behavior
+     *       for anonymous under permissive policy).</li>
+     * </ul>
+     *
+     * <p>Kept package-private so tests can drive the wrap in isolation
+     * from the wasm dispatch stack.
+     */
+    static Object[] executeAsInvoker(final CallbackContext ctx,
+                                     final String interfaceName,
+                                     final String method,
+                                     final String argsSummary,
+                                     final Supplier<Object[]> body) {
+        if (CapabilityEnforcer.activePolicy().isEmpty()) {
+            // Capability disabled — fall through to the pre-Phase-4
+            // ambient-credential path. No ShiroUtils.executeAs call fires.
+            return body.get();
+        }
+        final Optional<Subject> subject = ctx == null
+                ? Optional.empty()
+                : ctx.invokerSubject();
+        if (subject.isPresent()) {
+            return ShiroUtils.executeAs(subject.get(), body::get);
+        }
+        // Capability enabled + anonymous invoker — consult the shared
+        // anonymous-policy config key (reused from Phase 1b instead of
+        // introducing a Phase-4-specific variant).
+        final CapabilityPolicyResolver.AnonymousPolicy anon =
+                WebFunctionConfig.getAnonymousPolicy();
+        if (anon == CapabilityPolicyResolver.AnonymousPolicy.DENY) {
+            final String extensionUri = ctx == null ? "" : ctx.extensionUri();
+            throw new WfCapabilityError.PerCallDenied(
+                    extensionUri,
+                    interfaceName,
+                    method,
+                    "",
+                    WfCapabilityError.PerCallDenied.REASON_PERMISSION_DENIED,
+                    "anonymous invoker not permitted under current capability policy"
+                            + (argsSummary == null || argsSummary.isEmpty()
+                                    ? "" : " (args: " + argsSummary + ")"));
+        }
+        // permit / inherit — fall through to the pre-Phase-4 ambient
+        // path, matching the CapabilityPolicyResolver anonymous-subject
+        // semantics.
+        return body.get();
     }
 
     /**
@@ -102,21 +170,23 @@ public final class HostCallbacks {
             // typed WF_HOST_CALLBACK_TOLL_EXHAUSTED at the outer
             // Call.evaluate / WebFunctionServiceOperator catch site.
             ctx.chargeToll("host.execute-query");
-            try {
-                final String sparql = ((ComponentVal) args[0]).asString();
-                final Map<String, Value> initial = decodeBindings((ComponentVal) args[1]);
-                final int rowCap = decodeOptionalU32((ComponentVal) args[2]).orElseGet(ctx::maxRows);
+            return executeAsInvoker(ctx, "graph-callbacks", "execute-query", sparqlPreview, () -> {
+                try {
+                    final String sparql = ((ComponentVal) args[0]).asString();
+                    final Map<String, Value> initial = decodeBindings((ComponentVal) args[1]);
+                    final int rowCap = decodeOptionalU32((ComponentVal) args[2]).orElseGet(ctx::maxRows);
 
-                ctx.enter();
-                try (SelectQueryResult rs = ctx.executeSelect(sparql, initial)) {
-                    return new Object[] { ComponentVal.ok(encodeBindingSets(rs, rowCap)) };
-                } finally {
-                    ctx.exit();
+                    ctx.enter();
+                    try (SelectQueryResult rs = ctx.executeSelect(sparql, initial)) {
+                        return new Object[] { ComponentVal.ok(encodeBindingSets(rs, rowCap)) };
+                    } finally {
+                        ctx.exit();
+                    }
+                } catch (RuntimeException e) {
+                    return new Object[] { ComponentVal.err(ComponentVal.string(
+                        e.getMessage() == null ? e.toString() : e.getMessage())) };
                 }
-            } catch (RuntimeException e) {
-                return new Object[] { ComponentVal.err(ComponentVal.string(
-                    e.getMessage() == null ? e.toString() : e.getMessage())) };
-            }
+            });
         };
     }
 
@@ -135,23 +205,25 @@ public final class HostCallbacks {
             }
             enforceCapability(ctx, "graph-callbacks", "follow-predicate", "");
             ctx.chargeToll("host.follow-predicate");
-            try {
-                final Value subj = decodeNode((ComponentVal) args[0]);
-                final Value pred = decodeNode((ComponentVal) args[1]);
-                ctx.enter();
+            return executeAsInvoker(ctx, "graph-callbacks", "follow-predicate", "", () -> {
                 try {
-                    final java.util.List<Value> objs = ctx.followPredicate(subj, pred);
-                    final java.util.List<ComponentVal> encoded =
-                        new java.util.ArrayList<>(objs.size());
-                    for (Value v : objs) encoded.add(encodeNode(v));
-                    return new Object[] { ComponentVal.ok(ComponentVal.list(encoded)) };
-                } finally {
-                    ctx.exit();
+                    final Value subj = decodeNode((ComponentVal) args[0]);
+                    final Value pred = decodeNode((ComponentVal) args[1]);
+                    ctx.enter();
+                    try {
+                        final java.util.List<Value> objs = ctx.followPredicate(subj, pred);
+                        final java.util.List<ComponentVal> encoded =
+                            new java.util.ArrayList<>(objs.size());
+                        for (Value v : objs) encoded.add(encodeNode(v));
+                        return new Object[] { ComponentVal.ok(ComponentVal.list(encoded)) };
+                    } finally {
+                        ctx.exit();
+                    }
+                } catch (RuntimeException e) {
+                    return new Object[] { ComponentVal.err(ComponentVal.string(
+                        e.getMessage() == null ? e.toString() : e.getMessage())) };
                 }
-            } catch (RuntimeException e) {
-                return new Object[] { ComponentVal.err(ComponentVal.string(
-                    e.getMessage() == null ? e.toString() : e.getMessage())) };
-            }
+            });
         };
     }
 
@@ -197,20 +269,22 @@ public final class HostCallbacks {
             }
             enforceCapability(ctx, "graph-callbacks", "run-prepared", "");
             ctx.chargeToll("host.run-prepared");
-            try {
-                final int handle = (int) ((ComponentVal) args[0]).asU32();
-                final Map<String, Value> initial = decodeBindings((ComponentVal) args[1]);
-                final int rowCap = decodeOptionalU32((ComponentVal) args[2]).orElseGet(ctx::maxRows);
-                ctx.enter();
-                try (SelectQueryResult rs = ctx.runPrepared(handle, initial)) {
-                    return new Object[] { ComponentVal.ok(encodeBindingSets(rs, rowCap)) };
-                } finally {
-                    ctx.exit();
+            return executeAsInvoker(ctx, "graph-callbacks", "run-prepared", "", () -> {
+                try {
+                    final int handle = (int) ((ComponentVal) args[0]).asU32();
+                    final Map<String, Value> initial = decodeBindings((ComponentVal) args[1]);
+                    final int rowCap = decodeOptionalU32((ComponentVal) args[2]).orElseGet(ctx::maxRows);
+                    ctx.enter();
+                    try (SelectQueryResult rs = ctx.runPrepared(handle, initial)) {
+                        return new Object[] { ComponentVal.ok(encodeBindingSets(rs, rowCap)) };
+                    } finally {
+                        ctx.exit();
+                    }
+                } catch (RuntimeException e) {
+                    return new Object[] { ComponentVal.err(ComponentVal.string(
+                        e.getMessage() == null ? e.toString() : e.getMessage())) };
                 }
-            } catch (RuntimeException e) {
-                return new Object[] { ComponentVal.err(ComponentVal.string(
-                    e.getMessage() == null ? e.toString() : e.getMessage())) };
-            }
+            });
         };
     }
 
@@ -232,20 +306,22 @@ public final class HostCallbacks {
                     ? snippet(((ComponentVal) args[0]).asString(), 60) : "";
             enforceCapability(ctx, "graph-callbacks", "execute-update", updPreview);
             ctx.chargeToll("host.execute-update");
-            try {
-                final String sparql = ((ComponentVal) args[0]).asString();
-                final Map<String, Value> initial = decodeBindings((ComponentVal) args[1]);
-                ctx.enter();
+            return executeAsInvoker(ctx, "graph-callbacks", "execute-update", updPreview, () -> {
                 try {
-                    ctx.executeUpdate(sparql, initial);
-                    return new Object[] { ComponentVal.ok(null) };
-                } finally {
-                    ctx.exit();
+                    final String sparql = ((ComponentVal) args[0]).asString();
+                    final Map<String, Value> initial = decodeBindings((ComponentVal) args[1]);
+                    ctx.enter();
+                    try {
+                        ctx.executeUpdate(sparql, initial);
+                        return new Object[] { ComponentVal.ok(null) };
+                    } finally {
+                        ctx.exit();
+                    }
+                } catch (RuntimeException e) {
+                    return new Object[] { ComponentVal.err(ComponentVal.string(
+                        e.getMessage() == null ? e.toString() : e.getMessage())) };
                 }
-            } catch (RuntimeException e) {
-                return new Object[] { ComponentVal.err(ComponentVal.string(
-                    e.getMessage() == null ? e.toString() : e.getMessage())) };
-            }
+            });
         };
     }
 
@@ -287,34 +363,36 @@ public final class HostCallbacks {
                     ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "wasm-callbacks", "invoke-wasm", invokeUrl);
             ctx.chargeToll("host.invoke-wasm");
-            try {
-                final String url = ((ComponentVal) args[0]).asString();
-                final Value urlValue = Values.iri(url);
+            return executeAsInvoker(ctx, "wasm-callbacks", "invoke-wasm", invokeUrl, () -> {
+                try {
+                    final String url = ((ComponentVal) args[0]).asString();
+                    final Value urlValue = Values.iri(url);
 
-                // Decode the WIT list<value> into Stardog Value[]. Same shape
-                // Call.java hands to StardogWasmInstance.evaluate — this is
-                // the identity path.
-                final ComponentVal argsList = (ComponentVal) args[1];
-                final List<ComponentVal> inner = argsList.asList();
-                final Value[] callArgs = new Value[inner.size()];
-                for (int i = 0; i < inner.size(); i++) {
-                    callArgs[i] = decodeNode(inner.get(i));
-                }
-
-                ctx.enter();
-                try (StardogWasmInstance instance =
-                        StardogWasmInstance.from(urlValue, ctx.dictionary())) {
-                    try (SelectQueryResult rs = instance.evaluate(callArgs)) {
-                        return new Object[] { ComponentVal.ok(
-                            encodeBindingSets(rs, ctx.maxRows())) };
+                    // Decode the WIT list<value> into Stardog Value[]. Same shape
+                    // Call.java hands to StardogWasmInstance.evaluate — this is
+                    // the identity path.
+                    final ComponentVal argsList = (ComponentVal) args[1];
+                    final List<ComponentVal> inner = argsList.asList();
+                    final Value[] callArgs = new Value[inner.size()];
+                    for (int i = 0; i < inner.size(); i++) {
+                        callArgs[i] = decodeNode(inner.get(i));
                     }
-                } finally {
-                    ctx.exit();
+
+                    ctx.enter();
+                    try (StardogWasmInstance instance =
+                            StardogWasmInstance.from(urlValue, ctx.dictionary())) {
+                        try (SelectQueryResult rs = instance.evaluate(callArgs)) {
+                            return new Object[] { ComponentVal.ok(
+                                encodeBindingSets(rs, ctx.maxRows())) };
+                        }
+                    } finally {
+                        ctx.exit();
+                    }
+                } catch (Exception e) {
+                    return new Object[] { ComponentVal.err(ComponentVal.string(
+                        "invoke-wasm: " + (e.getMessage() == null ? e.toString() : e.getMessage()))) };
                 }
-            } catch (Exception e) {
-                return new Object[] { ComponentVal.err(ComponentVal.string(
-                    "invoke-wasm: " + (e.getMessage() == null ? e.toString() : e.getMessage()))) };
-            }
+            });
         };
     }
 
@@ -371,32 +449,34 @@ public final class HostCallbacks {
                     ? snippet(((ComponentVal) args[0]).asString(), 60) : "";
             enforceCapability(ctx, "graph-callbacks", "execute-query", graphQPreview);
             ctx.chargeToll("graph-callbacks.execute-query");
-            try {
-                final String sparql = ((ComponentVal) args[0]).asString();
-                ctx.enter();
-                try (SelectQueryResult rs = ctx.executeSelect(sparql, new LinkedHashMap<>())) {
-                    final List<String> vars = rs.variables();
-                    final List<ComponentVal> bindings = new ArrayList<>();
-                    while (rs.hasNext()) {
-                        final BindingSet bs = rs.next();
-                        for (String var : vars) {
-                            final Value v = bs.get(var);
-                            if (v == null) continue;
-                            final Map<String, ComponentVal> bindingFields = new LinkedHashMap<>();
-                            bindingFields.put("variable", ComponentVal.string(var));
-                            bindingFields.put("value", encodeTermV1(v));
-                            bindings.add(ComponentVal.record(bindingFields));
+            return executeAsInvoker(ctx, "graph-callbacks", "execute-query", graphQPreview, () -> {
+                try {
+                    final String sparql = ((ComponentVal) args[0]).asString();
+                    ctx.enter();
+                    try (SelectQueryResult rs = ctx.executeSelect(sparql, new LinkedHashMap<>())) {
+                        final List<String> vars = rs.variables();
+                        final List<ComponentVal> bindings = new ArrayList<>();
+                        while (rs.hasNext()) {
+                            final BindingSet bs = rs.next();
+                            for (String var : vars) {
+                                final Value v = bs.get(var);
+                                if (v == null) continue;
+                                final Map<String, ComponentVal> bindingFields = new LinkedHashMap<>();
+                                bindingFields.put("variable", ComponentVal.string(var));
+                                bindingFields.put("value", encodeTermV1(v));
+                                bindings.add(ComponentVal.record(bindingFields));
+                            }
                         }
+                        final ComponentVal queryResult = ComponentVal.variant(
+                            "bindings", ComponentVal.list(bindings));
+                        return new Object[] { ComponentVal.ok(queryResult) };
+                    } finally {
+                        ctx.exit();
                     }
-                    final ComponentVal queryResult = ComponentVal.variant(
-                        "bindings", ComponentVal.list(bindings));
-                    return new Object[] { ComponentVal.ok(queryResult) };
-                } finally {
-                    ctx.exit();
+                } catch (RuntimeException e) {
+                    return new Object[] { ComponentVal.err(discriminateGraphError(e)) };
                 }
-            } catch (RuntimeException e) {
-                return new Object[] { ComponentVal.err(discriminateGraphError(e)) };
-            }
+            });
         };
     }
 
@@ -425,18 +505,20 @@ public final class HostCallbacks {
                     ? snippet(((ComponentVal) args[0]).asString(), 60) : "";
             enforceCapability(ctx, "graph-callbacks", "execute-update", graphUPreview);
             ctx.chargeToll("graph-callbacks.execute-update");
-            try {
-                final String sparql = ((ComponentVal) args[0]).asString();
-                ctx.enter();
+            return executeAsInvoker(ctx, "graph-callbacks", "execute-update", graphUPreview, () -> {
                 try {
-                    ctx.executeUpdate(sparql, new LinkedHashMap<>());
-                    return new Object[] { ComponentVal.ok(null) };
-                } finally {
-                    ctx.exit();
+                    final String sparql = ((ComponentVal) args[0]).asString();
+                    ctx.enter();
+                    try {
+                        ctx.executeUpdate(sparql, new LinkedHashMap<>());
+                        return new Object[] { ComponentVal.ok(null) };
+                    } finally {
+                        ctx.exit();
+                    }
+                } catch (RuntimeException e) {
+                    return new Object[] { ComponentVal.err(discriminateGraphError(e)) };
                 }
-            } catch (RuntimeException e) {
-                return new Object[] { ComponentVal.err(discriminateGraphError(e)) };
-            }
+            });
         };
     }
 
