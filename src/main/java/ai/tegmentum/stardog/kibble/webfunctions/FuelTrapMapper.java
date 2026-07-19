@@ -58,24 +58,26 @@ final class FuelTrapMapper {
         // wasmtime4j TrapException as the cause.
         if (hasOutOfFuelTrap(thrown)) {
             final String extensionUri = ctx == null ? "" : ctx.extensionUri();
+            final long cap = WebFunctionConfig.fuelPerInvocationMax();
+            // Real fuel consumed: wasmtime4j 1.4.7 / webassembly4j 2.4.3 expose
+            // ComponentInstance.fuelConsumed() through CallbackContext. Prefer
+            // the real value; fall back to the cap (upper bound — the guest
+            // necessarily hit it to trap) when the provider returns the -1
+            // sentinel (module mode, non-wasmtime provider).
+            final long consumed = ctx == null ? -1L : ctx.fuelConsumed();
+            final long reportedConsumed = consumed >= 0L ? consumed : cap;
             if (ctx != null && ctx.tollExhaustedCallback() != null) {
                 return new WfBudgetError.HostCallbackTollExhausted(
                         extensionUri,
                         ctx.tollExhaustedCallback(),
-                        ctx.tollUsed(),
-                        WebFunctionConfig.fuelPerInvocationMax(),
+                        reportedConsumed,
+                        cap,
                         WebFunctionConfig.fuelHostCallbackToll());
             }
-            // Fuel consumed reporting: wasmtime4j-provider does not expose
-            // the store's fuelConsumed hook to component-mode Java callers
-            // today. We report the configured per-invocation cap — an upper
-            // bound is honest since the guest necessarily hit the cap to
-            // trap. Phase-2 threads the real accounting through once
-            // wasmtime4j-provider surfaces the store.
             return new WfBudgetError.PerInvocationTrap(
                     extensionUri,
-                    WebFunctionConfig.fuelPerInvocationMax(),
-                    WebFunctionConfig.fuelPerInvocationMax());
+                    reportedConsumed,
+                    cap);
         }
         return null;
     }
