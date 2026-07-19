@@ -220,24 +220,6 @@ public class StardogWasmInstance implements Closeable {
         ShiroUtils.require(ActionType.EXECUTE, WebFunctionResourceType.INSTANCE, wasmUrl.toString());
     }
 
-    /**
-     * Capability-policy Phase 1 — load the sidecar manifest for
-     * {@code wasmUrl} through {@link ExtensionManifestLoader}. Returns
-     * {@link ExtensionManifest#ABSENT} when the sidecar is missing and
-     * {@code webfunctions.capability.require-manifest} is false; propagates
-     * {@link WfCapabilityError.ManifestMalformed} otherwise so admins see the
-     * parse failure surface. Callers only invoke this when the capability
-     * master gate is on, so an ABSENT return still flows to the resolver.
-     */
-    private static ExtensionManifest loadManifestForCapability(final URL wasmUrl) {
-        try {
-            return ExtensionManifestLoader.load(wasmUrl);
-        } catch (WfCapabilityError.ManifestMalformed malformed) {
-            if (WebFunctionConfig.isRequireManifest()) throw malformed;
-            return ExtensionManifest.ABSENT;
-        }
-    }
-
     public StardogWasmInstance(final URL wasmURL, final MappingDictionary mappingDictionary) throws ExecutionException {
         this(wasmURL);
         this.setMappingDictionary(mappingDictionary);
@@ -257,17 +239,20 @@ public class StardogWasmInstance implements Closeable {
                 } catch (IOException ioe) {
                     throw new RuntimeException(ioe);
                 }
-                // Capability-policy Phase 1 — resolve the effective grant
-                // before wiring the linker so we only wire interfaces the
-                // grant permits. When the master gate is off (default),
-                // {@link CapabilityEnforcer#activePolicy} returns empty
-                // and we fall through to the pre-capability code path
-                // that wires every interface unconditionally.
+                // Capability-policy — resolve the effective grant against
+                // the RDF-backed policy store before wiring the linker so
+                // we only wire interfaces the grant permits. When the
+                // master gate is off (default), {@link
+                // CapabilityEnforcer#activePolicy} returns empty and we
+                // fall through to the pre-capability code path that wires
+                // every interface unconditionally.
                 //
-                // On LoadTimeDenied, the enforcer's throw unwinds this
-                // constructor; Call.evaluate / WebFunctionServiceOperator
-                // surface it as-is (WfCapabilityError is a StardogException
-                // subtype, mirroring WfBudgetError).
+                // The resolver may throw LoadTimeDenied /
+                // UnknownExtension / PolicyStoreUnavailable — all
+                // StardogException subtypes, so they unwind this
+                // constructor and Call.evaluate /
+                // WebFunctionServiceOperator surface them as-is
+                // (mirroring WfBudgetError).
                 final Optional<CapabilityEnforcer> enforcer = CapabilityEnforcer.activePolicy();
                 final CapabilityGrant grant;
                 if (enforcer.isPresent()) {
