@@ -196,6 +196,46 @@ public class TestCapabilityPolicyResolver {
     }
 
     @Test
+    public void phase5AllowlistsPropagateFromTriplesToGrant() {
+        // Store returns Phase 5 axes → resolver wraps them into the
+        // grant's HttpPathAllowlist + WasmCalleeAllowlist. Empty
+        // policy-axis → grant carries the ALLOW_NONE singleton.
+        stubStore().set(new PolicyTriples(
+                Set.of("http-callbacks", "wasm-callbacks"),
+                Set.of(),
+                Set.of(),
+                Set.of("api.acme.com/public/"),
+                Set.of("ipfs://QmCallee")));
+        final Component component = fakeComponent(List.of(
+                "tegmentum:webfunction/http-callbacks@0.1.0",
+                "tegmentum:webfunction/wasm-callbacks@0.1.0"));
+        final CapabilityGrant g = CapabilityPolicyResolver.resolve(
+                EXT_URL, component, fakeSubject("alice"));
+        assertThat(g.httpPathAllowlist().isEmpty()).isFalse();
+        assertThat(g.httpPathAllowlist().matches("api.acme.com/public/orders")).isTrue();
+        assertThat(g.wasmCalleeAllowlist().isEmpty()).isFalse();
+        assertThat(g.wasmCalleeAllowlist().matches("ipfs://QmCallee")).isTrue();
+        assertThat(g.wasmCalleeAllowlist().matches("ipfs://QmOther")).isFalse();
+    }
+
+    @Test
+    public void phase5AllowlistsDefaultAllowNoneWhenAbsentInTriples() {
+        // Store returns no Phase 5 axes → grant uses ALLOW_NONE singletons
+        // — enforcer treats those as "no restriction beyond coarser
+        // interface / method / host checks".
+        stubStore().set(new PolicyTriples(
+                Set.of("http-callbacks"),
+                Set.of(),
+                Set.of("api.acme.com")));
+        final Component component = fakeComponent(List.of(
+                "tegmentum:webfunction/http-callbacks@0.1.0"));
+        final CapabilityGrant g = CapabilityPolicyResolver.resolve(
+                EXT_URL, component, fakeSubject("alice"));
+        assertThat(g.httpPathAllowlist()).isSameAs(HttpPathAllowlist.ALLOW_NONE);
+        assertThat(g.wasmCalleeAllowlist()).isSameAs(WasmCalleeAllowlist.ALLOW_NONE);
+    }
+
+    @Test
     public void bareInterfaceNameStripsPackageAndVersion() {
         assertThat(CapabilityPolicyResolver.bareInterfaceName(
                 "tegmentum:webfunction/graph-callbacks@0.1.0"))

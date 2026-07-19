@@ -41,13 +41,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>The SELECT the store issues per instantiation:
  * <pre>
  * PREFIX cap: &lt;http://semantalytics.com/2021/03/ns/stardog/webfunction/capability#&gt;
- * SELECT ?interface ?method ?host WHERE {
+ * SELECT ?interface ?method ?host ?httpPath ?wasmCallee WHERE {
  *   &lt;ipfs://Qm...&gt; cap:trusted true ;
  *                    cap:allowInterface ?interface .
  *   OPTIONAL { &lt;ipfs://Qm...&gt; cap:allowMethod ?method . }
  *   OPTIONAL { &lt;ipfs://Qm...&gt; cap:allowHost ?host . }
+ *   OPTIONAL { &lt;ipfs://Qm...&gt; cap:allowHttpPath ?httpPath . }
+ *   OPTIONAL { &lt;ipfs://Qm...&gt; cap:allowWasmCallee ?wasmCallee . }
  * }
  * </pre>
+ *
+ * <p>Phase 5 axes {@code ?httpPath} and {@code ?wasmCallee} project into
+ * the corresponding fields on {@link PolicyTriples}; the resolver wraps
+ * those into {@link HttpPathAllowlist} + {@link WasmCalleeAllowlist} on
+ * the grant.
  *
  * <p>Zero rows → unknown extension; the resolver consults the unknown-
  * extension policy config on that branch. Non-empty rows → the resolver
@@ -136,27 +143,35 @@ public final class KernelBackedCapabilityPolicyStore implements CapabilityPolicy
     private PolicyTriples readTriples(final String extensionUri) {
         final String subject = "<" + escapeIri(extensionUri) + ">";
         final String select =
-                "SELECT ?interface ?method ?host WHERE { "
+                "SELECT ?interface ?method ?host ?httpPath ?wasmCallee WHERE { "
                 + subject + " <" + CapabilityVocabulary.CAP_TRUSTED + "> true . "
                 + subject + " <" + CapabilityVocabulary.CAP_ALLOW_INTERFACE + "> ?interface . "
                 + "OPTIONAL { " + subject + " <"
                 + CapabilityVocabulary.CAP_ALLOW_METHOD + "> ?method . } "
                 + "OPTIONAL { " + subject + " <"
                 + CapabilityVocabulary.CAP_ALLOW_HOST + "> ?host . } "
+                + "OPTIONAL { " + subject + " <"
+                + CapabilityVocabulary.CAP_ALLOW_HTTP_PATH + "> ?httpPath . } "
+                + "OPTIONAL { " + subject + " <"
+                + CapabilityVocabulary.CAP_ALLOW_WASM_CALLEE + "> ?wasmCallee . } "
                 + "}";
 
-        final Set<String> ifaces  = new LinkedHashSet<>();
-        final Set<String> methods = new LinkedHashSet<>();
-        final Set<String> hosts   = new LinkedHashSet<>();
+        final Set<String> ifaces      = new LinkedHashSet<>();
+        final Set<String> methods     = new LinkedHashSet<>();
+        final Set<String> hosts       = new LinkedHashSet<>();
+        final Set<String> httpPaths   = new LinkedHashSet<>();
+        final Set<String> wasmCallees = new LinkedHashSet<>();
 
         ShiroUtils.executeAsSuperUser(kernel.getSecurityManager(), () -> {
             try (DatabaseConnection conn = kernel.getConnection(databaseName, Options.empty());
                  SelectQueryResult rs = conn.select(select).execute()) {
                 while (rs.hasNext()) {
                     final BindingSet bs = rs.next();
-                    final Object iface  = bs.get("interface");
-                    final Object method = bs.get("method");
-                    final Object host   = bs.get("host");
+                    final Object iface      = bs.get("interface");
+                    final Object method     = bs.get("method");
+                    final Object host       = bs.get("host");
+                    final Object httpPath   = bs.get("httpPath");
+                    final Object wasmCallee = bs.get("wasmCallee");
                     if (iface instanceof IRI) {
                         final String wire = CapabilityVocabulary.wireNameFor(iface.toString());
                         ifaces.add(wire != null ? wire : iface.toString());
@@ -169,14 +184,26 @@ public final class KernelBackedCapabilityPolicyStore implements CapabilityPolicy
                     if (host != null) {
                         hosts.add(literalOrIriString(host));
                     }
+                    if (httpPath != null) {
+                        httpPaths.add(literalOrIriString(httpPath));
+                    }
+                    if (wasmCallee != null) {
+                        // cap:allowWasmCallee is expected to be an IRI in the
+                        // policy triples (per the wave 5 vocabulary lock-in),
+                        // but literalOrIriString handles either shape so the
+                        // store is tolerant of admin-authored TTL that uses a
+                        // string literal.
+                        wasmCallees.add(literalOrIriString(wasmCallee));
+                    }
                 }
             }
         });
 
-        if (ifaces.isEmpty() && methods.isEmpty() && hosts.isEmpty()) {
+        if (ifaces.isEmpty() && methods.isEmpty() && hosts.isEmpty()
+                && httpPaths.isEmpty() && wasmCallees.isEmpty()) {
             return PolicyTriples.EMPTY;
         }
-        return new PolicyTriples(ifaces, methods, hosts);
+        return new PolicyTriples(ifaces, methods, hosts, httpPaths, wasmCallees);
     }
 
     private static String literalOrIriString(final Object v) {

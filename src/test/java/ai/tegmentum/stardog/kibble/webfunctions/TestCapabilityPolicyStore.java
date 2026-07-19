@@ -89,12 +89,43 @@ public class TestCapabilityPolicyStore {
         assertThat(exact.get().allowedInterfaces()).containsExactly("graph-callbacks");
         assertThat(exact.get().allowedMethods()).containsExactly("graph-callbacks/execute-query");
         assertThat(exact.get().allowedHosts()).containsExactly("api.acme.com");
+        // Backward-compat three-arg ctor leaves the Phase 5 axes empty.
+        assertThat(exact.get().allowedHttpPaths()).isEmpty();
+        assertThat(exact.get().allowedWasmCallees()).isEmpty();
 
         final Optional<PolicyTriples> unknown = store.resolveFor(unknownUrl);
         assertThat(unknown).isPresent();
         assertThat(unknown.get().isEmpty()).isTrue();
 
         assertThat(reads.get()).isEqualTo(2);
+    }
+
+    @Test
+    public void inMemoryFakeCarriesPhase5Axes() throws Exception {
+        // Phase 5 — the interface contract admits allowedHttpPaths +
+        // allowedWasmCallees on the canonical five-arg ctor. A store
+        // that populates them is honored end-to-end (the Kernel-backed
+        // production store's SPARQL SELECT is covered by
+        // WasmTestSuiteIT under mvn verify).
+        final URL knownUrl = new URL("file:///phase5.wasm");
+        final PolicyTriples triples = new PolicyTriples(
+                Set.of("http-callbacks", "wasm-callbacks"),
+                Set.of(),
+                Set.of("api.acme.com"),
+                Set.of("api.acme.com/public/"),
+                Set.of("ipfs://QmCallee", "https://reg.example.org/p.wasm"));
+        final CapabilityPolicyStore store = new CapabilityPolicyStore() {
+            @Override public Optional<PolicyTriples> resolveFor(final URL u) {
+                return Optional.of(u != null && u.equals(knownUrl)
+                        ? triples : PolicyTriples.EMPTY);
+            }
+            @Override public boolean isReady() { return true; }
+        };
+        final Optional<PolicyTriples> exact = store.resolveFor(knownUrl);
+        assertThat(exact).isPresent();
+        assertThat(exact.get().allowedHttpPaths()).containsExactly("api.acme.com/public/");
+        assertThat(exact.get().allowedWasmCallees()).containsExactlyInAnyOrder(
+                "ipfs://QmCallee", "https://reg.example.org/p.wasm");
     }
 
     @Test
