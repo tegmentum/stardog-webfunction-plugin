@@ -389,6 +389,94 @@ public class ComposeIntegrationIT {
         }
     }
 
+    // ---- IE4 ------------------------------------------------------------
+
+    /**
+     * IE4 — content-addressed CIDs preserve distinct compositions.
+     *
+     * <p>Compose two plans that differ in a well-observed field
+     * (Policy tenant tag), assert:
+     * <ul>
+     *   <li>The two composed byte streams produce distinct CIDs — the
+     *       orchestrator's emit surface is <em>content-addressed</em>
+     *       so a plan-level change flows through to a distinct hash.</li>
+     *   <li>Both artifacts materialise on disk under their respective
+     *       hex filenames — the store's idempotent write path does not
+     *       overwrite v1 when v2 lands.</li>
+     *   <li>Both plans' Turtle projections land in the compositions
+     *       named graph under distinct plan IRIs — each occupies its
+     *       own idempotency slot without stepping on the other.</li>
+     * </ul>
+     *
+     * <p>The two plans share the same root component + digest so the
+     * blob validator does not stall on a missing blob; only the plan's
+     * Policy (specifically the tenant tag) differs. The CBOR encoder
+     * carries the tenant literal through to the byte stream (see
+     * TestPlanV1Cbor#policyTenantEncodedWhenPresent), so the digest
+     * distinction is expected — this test tightens that unit-level
+     * observation into an integration-level round trip.
+     */
+    @Test
+    public void ie4_contentAddressedCidsPreserveDistinctCompositions() throws Exception {
+        ensurePolicyDb(SERVER_URL);
+
+        final PlanV1 planA = TestComposePlanFixtures.fullerPlan(
+                "uppercase", FIXTURE_WASM_DIGEST, "tenant-alpha");
+        final PlanV1 planB = TestComposePlanFixtures.fullerPlan(
+                "uppercase", FIXTURE_WASM_DIGEST, "tenant-beta");
+
+        final byte[] cborA = PlanV1Cbor.encode(planA);
+        final byte[] cborB = PlanV1Cbor.encode(planB);
+        assertThat(cborA)
+                .as("plans with distinct tenant tags must produce distinct CBOR")
+                .isNotEqualTo(cborB);
+
+        final byte[] composedA = CLIENT.composeFromCbor(cborA);
+        final byte[] composedB = CLIENT.composeFromCbor(cborB);
+
+        final String cidA = ARTIFACT_STORE.persist(composedA);
+        final String cidB = ARTIFACT_STORE.persist(composedB);
+        assertThat(cidA)
+                .as("distinct plans should compose to distinct content-addressed CIDs")
+                .isNotEqualTo(cidB);
+
+        // Both blobs on disk — the artifact store's persist path does
+        // not overwrite when a second CID lands.
+        final Path artA = ARTIFACT_STORE.artifactsDir()
+                .resolve(cidA.substring("sha256:".length()) + ".wasm");
+        final Path artB = ARTIFACT_STORE.artifactsDir()
+                .resolve(cidB.substring("sha256:".length()) + ".wasm");
+        assertThat(Files.exists(artA)).isTrue();
+        assertThat(Files.exists(artB)).isTrue();
+
+        // Both plans' Turtle projections land in the compositions graph
+        // under their respective plan IRIs. Distinct DELETE-INSERT
+        // windows so neither eviction steps on the other.
+        final String iriA = "urn:test:compose-it:plan:ie4:alpha";
+        final String iriB = "urn:test:compose-it:plan:ie4:beta";
+        final String cidUrlA = "sha256://" + cidA.substring("sha256:".length());
+        final String cidUrlB = "sha256://" + cidB.substring("sha256:".length());
+        insertCompositionsTurtle(SERVER_URL, iriA, CLIENT.planToTurtleCbor(cborA, iriA), cidUrlA);
+        insertCompositionsTurtle(SERVER_URL, iriB, CLIENT.planToTurtleCbor(cborB, iriB), cidUrlB);
+
+        final List<String[]> rowsA = readCompositionTriples(SERVER_URL, iriA);
+        final List<String[]> rowsB = readCompositionTriples(SERVER_URL, iriB);
+        assertThat(rowsA).as("plan A triples visible in compositions graph").isNotEmpty();
+        assertThat(rowsB).as("plan B triples visible in compositions graph").isNotEmpty();
+        assertThat(rowsA)
+                .as("plan A carries the plan-A CID as its composed artifact anchor")
+                .anyMatch(pv -> cidUrlA.equals(pv[1]));
+        assertThat(rowsB)
+                .as("plan B carries the plan-B CID as its composed artifact anchor")
+                .anyMatch(pv -> cidUrlB.equals(pv[1]));
+        assertThat(rowsA)
+                .as("plan A must NOT surface the plan-B CID URL")
+                .noneMatch(pv -> cidUrlB.equals(pv[1]));
+        assertThat(rowsB)
+                .as("plan B must NOT surface the plan-A CID URL")
+                .noneMatch(pv -> cidUrlA.equals(pv[1]));
+    }
+
     // ---- helpers --------------------------------------------------------
 
     /**
