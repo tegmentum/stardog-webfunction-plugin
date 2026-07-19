@@ -278,6 +278,77 @@ public class CapabilityAskIT {
                 .contains("api.example.com");
     }
 
+    // ---- I7 --------------------------------------------------------------
+
+    /**
+     * I7 — warn-on-undeclared audit row when the extension invokes a
+     * host callback whose (interface, method) is NOT declared in its
+     * embedded ask.
+     *
+     * <p>Fixture wiring:
+     * <ul>
+     *   <li>{@code example_graph_callback_extension_with_ask.wasm}
+     *       imports graph-callbacks and invokes execute-query at
+     *       runtime.</li>
+     *   <li>Its embedded ask declares only http-callbacks — a
+     *       deliberately understated ask so the runtime dispatch
+     *       falls outside the ask's declared surface.</li>
+     * </ul>
+     *
+     * <p>We grant graph-callbacks + graph-callbacks/execute-query in
+     * the policy DB so the dispatch actually proceeds; the
+     * warn-on-undeclared path fires <em>after</em> the grant check
+     * clears. We then read the on-disk audit-capability.log
+     * (per-row fsync guarantees the row is on disk before the
+     * assertion) and grep for a GRANTED_UNDECLARED row for the
+     * dispatched (interface, method).
+     */
+    @Test
+    public void i7_warnOnUndeclaredWritesAuditRow() throws Exception {
+        // Grant graph-callbacks + execute-query so the dispatch proceeds.
+        CapabilityPolicyDbHelpers.grantInterfaces(SERVER_URL, GRAPH_CB_URL,
+                List.of(CapabilityVocabulary.IFACE_GRAPH_CALLBACKS),
+                List.of("graph-callbacks/execute-query"));
+
+        // Note the current byte offset of the audit log so we grep
+        // only rows written by THIS test. tail-c anchoring at the
+        // pre-invocation size avoids seeing rows other sub-phases
+        // wrote (I5, I6 both emit GRANTED rows on their invokes).
+        final long preSize = auditLogSize();
+
+        // Invoke expand-neighborhood on an IRI. The extension will
+        // call graph-callbacks/execute-query internally; the guest
+        // return value is a comma-separated string of neighbours
+        // (empty when there are none). We only care that the
+        // dispatch actually reached execute-query — the empty
+        // response is enough evidence the host callback fired.
+        try (Connection conn = ConnectionConfiguration.to(DB)
+                .server(SERVER_URL)
+                .credentials("admin", "admin")
+                .connect()) {
+            final String query =
+                    "PREFIX wf: <" + WF_NAMESPACE + ">\n"
+                  + "PREFIX ex: <http://example.org/>\n"
+                  + "SELECT ?result WHERE {\n"
+                  + "  BIND(wf:call(str(<" + GRAPH_CB_URL + ">),"
+                  + " \"expand-neighborhood\", ex:root) AS ?result)\n"
+                  + "}";
+            try (SelectQueryResult r = conn.select(query).execute()) {
+                while (r.hasNext()) r.next();
+            }
+        }
+
+        // Read the tail of the audit log written since preSize.
+        final String tail = readAuditLogTail(preSize);
+        assertThat(tail)
+                .as("audit-capability.log should carry a GRANTED_UNDECLARED row "
+                        + "for graph-callbacks/execute-query on " + GRAPH_CB_URL)
+                .contains("GRANTED_UNDECLARED")
+                .contains(GRAPH_CB_URL)
+                .contains("graph-callbacks")
+                .contains("execute-query");
+    }
+
     // ---- helpers ---------------------------------------------------------
 
     /**
