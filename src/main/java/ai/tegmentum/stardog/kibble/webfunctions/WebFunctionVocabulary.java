@@ -33,6 +33,11 @@ public enum WebFunctionVocabulary {
     args(Template.urlTemplate),
     result(Template.urlTemplate),
     service(Template.urnTemplate),
+    // Compose Wave B — SPARQL SERVICE IRI for the plan-composition
+    // trigger surface. See WebFunctionComposeService for the
+    // parameter shape; the Java-callable ComposeAdmin.compose is the
+    // primary consumable path.
+    composePlan(Template.urlTemplate),
     ;
 
     private String template;

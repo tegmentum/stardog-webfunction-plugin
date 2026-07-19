@@ -27,9 +27,18 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
         // starting an enforcer is opt-in via the capability master gate.
         SecurityResourceTypes.register(WebFunctionCallbackResourceType.INSTANCE);
 
-        Multibinder.newSetBinder(binder(), Service.class)
-                .addBinding()
+        Multibinder<Service> services =
+                Multibinder.newSetBinder(binder(), Service.class);
+        services.addBinding()
                 .to(WebFunctionService.class)
+                .in(Singleton.class);
+        // Compose Wave B — plan-composition SPARQL SERVICE trigger.
+        // Registration is idempotent; the service IRI is reserved so
+        // Stardog's planner discovers it, but MVP evaluate throws with
+        // an actionable message pointing at the Java-callable
+        // ComposeAdmin.compose entry point.
+        services.addBinding()
+                .to(ai.tegmentum.stardog.kibble.webfunctions.compose.WebFunctionComposeService.class)
                 .in(Singleton.class);
 
         // Fuel metering Phase 2 — wire the Kernel-backed fuel state store
