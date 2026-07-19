@@ -58,6 +58,44 @@ public final class HostCallbacks {
         if (enforcer.isEmpty()) return;
         final CapabilityGrant grant = ctx.capabilityGrant().orElse(null);
         enforcer.get().perCallback(ctx, grant, interfaceName, method, argsSummary);
+        // Grant permitted — capability-ask warn-on-undeclared diagnostic
+        // ({@code capability-ask.md} §8). Fires ONLY when the extension
+        // shipped an ask (ctx.ask() present); a missing ask is already
+        // reported at load-time and doesn't merit per-callback audit
+        // noise. When present, the invoked (interface, method) tuple
+        // must appear in the ask or a GRANTED_UNDECLARED row lands.
+        // Dispatch proceeds either way — this is diagnostic, not
+        // authorization.
+        warnIfUndeclared(ctx, grant, interfaceName, method, argsSummary);
+    }
+
+    /**
+     * Capability-ask §8 warn-on-undeclared. Called after the grant check
+     * has permitted the dispatch; skips when no ask is stamped
+     * (extension shipped without one, capability disabled). Writes one
+     * {@link CapabilityAuditRow.Outcome#GRANTED_UNDECLARED} row per
+     * undeclared dispatch and returns — never throws, never denies.
+     *
+     * <p>Kept package-private so tests can drive the check in isolation
+     * from the wasm dispatch stack (same pattern as
+     * {@link #enforceHttpPathCapability} / {@link #enforceWasmCalleeCapability}).
+     */
+    static void warnIfUndeclared(final CallbackContext ctx,
+                                 final CapabilityGrant grant,
+                                 final String interfaceName,
+                                 final String method,
+                                 final String argsSummary) {
+        final Optional<CapabilityAsk> askOpt = ctx.ask();
+        if (askOpt.isEmpty()) return;
+        final CapabilityAsk ask = askOpt.get();
+        if (ask.declaresInterface(interfaceName)
+                && ask.declaresMethod(interfaceName, method)) {
+            return; // declared — nothing to record
+        }
+        final String invoker = grant == null ? "" : grant.invokerPrincipal();
+        final String extensionUri = ctx.extensionUri();
+        CapabilityAttributionRing.recordGrantedUndeclared(
+                invoker, extensionUri, interfaceName, method, argsSummary);
     }
 
     /**

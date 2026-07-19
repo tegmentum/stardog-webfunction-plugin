@@ -151,6 +151,32 @@ public final class CapabilityAttributionRing {
     }
 
     /**
+     * Record a {@link CapabilityAuditRow.Outcome#GRANTED_UNDECLARED}
+     * outcome — the capability-ask warn-on-undeclared diagnostic
+     * ({@code capability-ask.md} §8). The dispatch was permitted by
+     * grant but not declared by the extension's ask. Used to catch
+     * malicious understated asks and buggy drift. Dispatch still
+     * proceeded; the diagnostic is advisory.
+     */
+    public static void recordGrantedUndeclared(final String userId,
+                                               final String extensionUri,
+                                               final String interfaceName,
+                                               final String method,
+                                               final String argumentsSummary) {
+        if (!INSTANCE.enabled.get()) return;
+        INSTANCE.append(new CapabilityAuditRow(
+                Instant.now(),
+                nonNull(userId),
+                "",
+                nonNull(extensionUri),
+                nonNull(interfaceName),
+                nonNull(method),
+                nonNull(argumentsSummary),
+                CapabilityAuditRow.Outcome.GRANTED_UNDECLARED,
+                ""));
+    }
+
+    /**
      * Record a {@link CapabilityAuditRow.Outcome#DENIED} outcome with a
      * discriminator tag from {@link WfCapabilityError.PerCallDenied}'s
      * {@code REASON_*} constants.

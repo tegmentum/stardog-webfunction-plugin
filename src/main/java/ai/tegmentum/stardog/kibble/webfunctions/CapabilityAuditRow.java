@@ -64,10 +64,19 @@ public record CapabilityAuditRow(
      * collapses the three denial reasons per implementation memo §2 —
      * the {@link #denyReason()} field discriminates without needing
      * separate enum values downstream tooling has to switch on.
+     *
+     * <p>{@link #GRANTED_UNDECLARED} is the capability-ask
+     * warn-on-undeclared signal ({@code capability-ask.md} §8): the
+     * grant permitted the dispatch, but the extension's ask did not
+     * declare the invoked (interface, method) tuple. Dispatch still
+     * proceeds — this is diagnostic, not authorization — and the
+     * operator can filter compliance queries by this variant to catch
+     * malicious understated asks and buggy drift.
      */
     public enum Outcome {
         GRANTED,
-        DENIED
+        DENIED,
+        GRANTED_UNDECLARED
     }
 
     /**
