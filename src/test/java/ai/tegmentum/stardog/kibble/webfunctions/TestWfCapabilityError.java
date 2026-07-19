@@ -25,7 +25,9 @@ public class TestWfCapabilityError {
                 .isInstanceOf(RuntimeException.class);
         assertThat(new WfCapabilityError.PerCallDenied("u", "i", "m", "alice", "x", "y"))
                 .isInstanceOf(StardogException.class);
-        assertThat(new WfCapabilityError.ManifestMalformed("u", "err"))
+        assertThat(new WfCapabilityError.PolicyStoreUnavailable("u", "err"))
+                .isInstanceOf(StardogException.class);
+        assertThat(new WfCapabilityError.UnknownExtension("u", "alice", "policy"))
                 .isInstanceOf(StardogException.class);
     }
 
@@ -67,20 +69,35 @@ public class TestWfCapabilityError {
     }
 
     @Test
-    public void manifestMalformedCarriesParseError() {
-        final WfCapabilityError.ManifestMalformed err = new WfCapabilityError.ManifestMalformed(
-                "file:///ext.wasm.toml", "unexpected token at line 3");
-        assertThat(err.errorCode()).isEqualTo("WF_CAPABILITY_MANIFEST_MALFORMED");
-        assertThat(err.parseError()).isEqualTo("unexpected token at line 3");
+    public void policyStoreUnavailableCarriesDetail() {
+        final WfCapabilityError.PolicyStoreUnavailable err =
+                new WfCapabilityError.PolicyStoreUnavailable(
+                        "file:///ext.wasm", "policy store not installed");
+        assertThat(err.errorCode()).isEqualTo("WF_CAPABILITY_POLICY_STORE_UNAVAILABLE");
+        assertThat(err.detail()).isEqualTo("policy store not installed");
         assertThat(err.jsonPayload())
-                .contains("\"parse_error\":\"unexpected token at line 3\"");
+                .contains("\"detail\":\"policy store not installed\"");
+    }
+
+    @Test
+    public void unknownExtensionCarriesInvokerAndPolicySource() {
+        final WfCapabilityError.UnknownExtension err =
+                new WfCapabilityError.UnknownExtension(
+                        "file:///ext.wasm", "alice",
+                        "unknown-extension-policy=deny");
+        assertThat(err.errorCode()).isEqualTo("WF_CAPABILITY_UNKNOWN_EXTENSION");
+        assertThat(err.invoker()).isEqualTo("alice");
+        assertThat(err.policySource()).isEqualTo("unknown-extension-policy=deny");
+        assertThat(err.jsonPayload())
+                .contains("\"invoker\":\"alice\"")
+                .contains("\"policy_source\":\"unknown-extension-policy=deny\"");
     }
 
     @Test
     public void messageEmbedsJsonAtSentinelSuffix() {
         // Same shape as WfBudgetError — Stardog's string-only SPARQL error
         // surface conveys the JSON payload through this suffix.
-        final WfCapabilityError err = new WfCapabilityError.ManifestMalformed("u", "e");
+        final WfCapabilityError err = new WfCapabilityError.PolicyStoreUnavailable("u", "e");
         assertThat(err.getMessage()).contains(" json=");
         final String tail = err.getMessage().substring(err.getMessage().indexOf(" json=") + 6);
         assertThat(tail).isEqualTo(err.jsonPayload());
@@ -88,8 +105,9 @@ public class TestWfCapabilityError {
 
     @Test
     public void jsonEscapesQuotesAndBackslashes() {
-        final WfCapabilityError.ManifestMalformed err = new WfCapabilityError.ManifestMalformed(
-                "file:///a\"b\\c.wasm", "quote \" and backslash \\ present");
+        final WfCapabilityError.PolicyStoreUnavailable err =
+                new WfCapabilityError.PolicyStoreUnavailable(
+                        "file:///a\"b\\c.wasm", "quote \" and backslash \\ present");
         assertThat(err.jsonPayload())
                 .contains("\\\"")   // escaped inner quote
                 .contains("\\\\");  // escaped backslash
@@ -109,17 +127,15 @@ public class TestWfCapabilityError {
     }
 
     @Test
-    public void sealedHierarchyPermitsThreeVariants() {
-        // The permits clause is a design commitment; if a follow-up adds
-        // Phase 2's UnsignedRejected / SignatureInvalid it needs an
-        // explicit permits update. Assertion is compile-only via the
-        // exhaustive switch below.
+    public void sealedHierarchyPermitsFourVariants() {
+        // The permits clause is a design commitment; any follow-up that
+        // adds a variant needs an explicit permits update. Assertion is
+        // compile-only via the exhaustive switch below.
         final WfCapabilityError err = new WfCapabilityError.PerCallDenied(
                 "u", "i", "m", "a", "r", "s");
         final String tag = switch (err) {
             case WfCapabilityError.LoadTimeDenied ignored          -> "load";
             case WfCapabilityError.PerCallDenied ignored           -> "call";
-            case WfCapabilityError.ManifestMalformed ignored       -> "malformed";
             case WfCapabilityError.PolicyStoreUnavailable ignored  -> "store-down";
             case WfCapabilityError.UnknownExtension ignored        -> "unknown";
         };

@@ -3,31 +3,30 @@ package ai.tegmentum.stardog.kibble.webfunctions;
 import com.complexible.stardog.StardogException;
 
 /**
- * Typed SPARQL error surface for the capability-policy Phase 1 landing.
+ * Typed SPARQL error surface for capability-policy denial + store errors.
  * Mirrors {@link WfBudgetError}'s sealed-hierarchy shape so programmatic
  * callers can dispatch on the variant type without string-matching, and
  * so the JSON payload rides through Stardog's string-only error surface
  * via the same {@code " json=<payload>"} sentinel convention.
  *
- * <p>Phase 1 variants:
+ * <p>Variants:
  * <ul>
  *   <li>{@link LoadTimeDenied} — instantiation-time capability denial
- *       ({@code WF_CAPABILITY_DENIED_AT_LOAD}). Fires when a required
- *       interface is missing from the effective grant. Policy-actionable
- *       (admin action to grant the interface).</li>
+ *       ({@code WF_CAPABILITY_DENIED_AT_LOAD}). Fires when the anonymous
+ *       policy denies or a required interface is missing from the
+ *       effective grant.</li>
  *   <li>{@link PerCallDenied} — per-callback capability denial
  *       ({@code WF_CAPABILITY_DENIED_AT_CALL}). Fires when a dispatch
  *       fails a method policy, HTTP host allowlist, or Shiro permission
- *       check. Policy-actionable.</li>
- *   <li>{@link ManifestMalformed} — manifest parsing / lookup failure
- *       ({@code WF_CAPABILITY_MANIFEST_MALFORMED}). Fires when the
- *       sidecar manifest is missing, unreadable, or fails TOML parse.
- *       Publisher-actionable (extension author fixes the manifest).</li>
+ *       check.</li>
+ *   <li>{@link PolicyStoreUnavailable} — the capability policy store did
+ *       not answer ({@code WF_CAPABILITY_POLICY_STORE_UNAVAILABLE}). The
+ *       store is uninstalled, bootstrap failed, or a transient read
+ *       error occurred. Deployment-actionable.</li>
+ *   <li>{@link UnknownExtension} — the store is up but has no policy for
+ *       the extension URL, and the unknown-extension policy is DENY
+ *       ({@code WF_CAPABILITY_UNKNOWN_EXTENSION}). Admin-actionable.</li>
  * </ul>
- *
- * <p>Phase 2 will extend the sealed hierarchy with {@code UnsignedRejected}
- * and {@code SignatureInvalid} once Ed25519 signature verification lands
- * per {@code capability-implementation.md} §14.
  *
  * <p>All variants extend {@link StardogException} (a {@link RuntimeException})
  * so they propagate through Stardog's query-evaluation stack as any other
@@ -36,7 +35,6 @@ import com.complexible.stardog.StardogException;
 public abstract sealed class WfCapabilityError extends StardogException
         permits WfCapabilityError.LoadTimeDenied,
                 WfCapabilityError.PerCallDenied,
-                WfCapabilityError.ManifestMalformed,
                 WfCapabilityError.PolicyStoreUnavailable,
                 WfCapabilityError.UnknownExtension {
 
@@ -53,8 +51,9 @@ public abstract sealed class WfCapabilityError extends StardogException
 
     /**
      * Stable identifier — {@code WF_CAPABILITY_DENIED_AT_LOAD},
-     * {@code WF_CAPABILITY_DENIED_AT_CALL}, or
-     * {@code WF_CAPABILITY_MANIFEST_MALFORMED}.
+     * {@code WF_CAPABILITY_DENIED_AT_CALL},
+     * {@code WF_CAPABILITY_POLICY_STORE_UNAVAILABLE}, or
+     * {@code WF_CAPABILITY_UNKNOWN_EXTENSION}.
      */
     public final String errorCode() {
         return errorCode;
@@ -230,53 +229,6 @@ public abstract sealed class WfCapabilityError extends StardogException
                     + "\"invoker\":\"" + jsonEscape(nonNull(invoker)) + "\","
                     + "\"reason\":\"" + jsonEscape(nonNull(reason)) + "\","
                     + "\"arguments_summary\":\"" + jsonEscape(nonNull(argumentsSummary)) + "\""
-                    + "}";
-        }
-    }
-
-    /**
-     * {@code WF_CAPABILITY_MANIFEST_MALFORMED} — the sidecar manifest
-     * could not be read or parsed. Fires from
-     * {@link ExtensionManifestLoader} on missing sidecar (when
-     * {@code require-manifest=true}), on unreadable URL, or on TOML
-     * parse error. Publisher-actionable — the extension author fixes
-     * the manifest and re-publishes.
-     *
-     * <p>JSON payload schema:
-     * <pre>
-     * {
-     *   "error_code": "WF_CAPABILITY_MANIFEST_MALFORMED",
-     *   "extension": "&lt;wasm URI or manifest URI&gt;",
-     *   "parse_error": "&lt;short human parse error or fetch failure&gt;"
-     * }
-     * </pre>
-     */
-    public static final class ManifestMalformed extends WfCapabilityError {
-
-        private final String extensionUri;
-        private final String parseError;
-
-        public ManifestMalformed(final String extensionUri, final String parseError) {
-            super("WF_CAPABILITY_MANIFEST_MALFORMED",
-                  humanMessage(extensionUri, parseError),
-                  jsonOf(extensionUri, parseError));
-            this.extensionUri = nonNull(extensionUri);
-            this.parseError   = nonNull(parseError);
-        }
-
-        public String extensionUri() { return extensionUri; }
-        public String parseError()   { return parseError; }
-
-        private static String humanMessage(final String extensionUri, final String parseError) {
-            return "Extension '" + nonNull(extensionUri) + "' manifest failed to load or parse: "
-                    + nonNull(parseError) + ". Fix the TOML sidecar and re-upload the extension.";
-        }
-
-        private static String jsonOf(final String extensionUri, final String parseError) {
-            return "{"
-                    + "\"error_code\":\"WF_CAPABILITY_MANIFEST_MALFORMED\","
-                    + "\"extension\":\"" + jsonEscape(nonNull(extensionUri)) + "\","
-                    + "\"parse_error\":\"" + jsonEscape(nonNull(parseError)) + "\""
                     + "}";
         }
     }
