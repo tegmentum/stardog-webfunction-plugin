@@ -29,6 +29,27 @@ public final class WebFunctionConfig {
 
     public static final String DEFAULT_ENGINE_PROVIDER = "wasmtime";
 
+    // Fuel metering Phase 1 — defensive-only layer.
+    //
+    // Off by default so existing deployments continue unchanged
+    // (fuel-implementation.md §8 Phase 1). Turn on to opt into typed
+    // WF_PER_INVOCATION_TRAP / WF_HOST_CALLBACK_TOLL_EXHAUSTED SPARQL
+    // error mapping backed by a per-invocation fuel cap and a per-
+    // host-callback toll. See:
+    //   ~/git/stardog-webfunction-wit/docs/design/fuel-metering.md
+    //   ~/git/stardog-webfunction-wit/docs/design/fuel-implementation.md
+    //     §4 (per-invocation flow), §5 (error surface), §6 (config surface),
+    //     §8 Phase 1 (scope of this landing).
+    //
+    // Phase 2+ keys — per-user/org quota, rate limiting, attribution log
+    // to disk, KernelBackedFuelStateStore — are NOT landed here.
+    public static final String PROP_FUEL_ENABLED              = "webfunctions.fuel.enabled";
+    public static final String PROP_FUEL_PER_INVOCATION_MAX   = "webfunctions.fuel.per-invocation.max";
+    public static final String PROP_FUEL_HOST_CALLBACK_TOLL   = "webfunctions.fuel.host-callback-toll";
+
+    public static final long DEFAULT_FUEL_PER_INVOCATION_MAX  = 100_000L;
+    public static final long DEFAULT_FUEL_HOST_CALLBACK_TOLL  = 1_000L;
+
     public enum EngineMode { MODULE, COMPONENT }
 
     private WebFunctionConfig() {}
@@ -58,10 +79,21 @@ public final class WebFunctionConfig {
     }
 
     public static WebAssemblyConfig fromSystemProperties() {
+        // When fuel metering (Phase 1) is enabled, force engine-level fuel
+        // consumption on so the store can enforce the per-invocation cap set
+        // in componentConfigFromSystemProperties(). The legacy
+        // webfunctions.fuel.limit is still honored as an engine-level default
+        // when fuel.enabled=false, per the back-compat guarantee in the memo.
+        final long engineFuelLimit;
+        if (fuelEnabled()) {
+            engineFuelLimit = fuelPerInvocationMax();
+        } else {
+            engineFuelLimit = getLong(PROP_FUEL_LIMIT).orElse(0L);
+        }
         final ai.tegmentum.webassembly4j.api.config.WebAssemblyConfigBuilder builder =
                 WebAssemblyConfig.builder()
                         .resourceLimits(resourceLimitsFromSystemProperties())
-                        .fuelLimit(getLong(PROP_FUEL_LIMIT).orElse(0L))
+                        .fuelLimit(engineFuelLimit)
                         .timeoutMillis(getLong(PROP_TIMEOUT_MILLIS).orElse(0L));
 
         engineId().ifPresent(builder::engine);
@@ -96,7 +128,14 @@ public final class WebFunctionConfig {
     public static ComponentConfig componentConfigFromSystemProperties() {
         final ComponentConfig.Builder builder = ComponentConfig.builder();
         getLong(PROP_MAX_MEMORY_BYTES).ifPresent(builder::maxMemoryBytes);
-        getLong(PROP_FUEL_LIMIT).ifPresent(builder::fuelLimit);
+        // Phase 1: when fuel.enabled=true, apply the per-invocation cap at
+        // component instantiation. Otherwise, honor the legacy fuel.limit as
+        // it did pre-Phase-1 so opt-out deployments behave identically.
+        if (fuelEnabled()) {
+            builder.fuelLimit(fuelPerInvocationMax());
+        } else {
+            getLong(PROP_FUEL_LIMIT).ifPresent(builder::fuelLimit);
+        }
         getLong(PROP_MAX_TABLE_ELEMS).ifPresent(builder::maxTableElements);
         getLong(PROP_MAX_INSTANCES).ifPresent(builder::maxInstances);
         return builder.build();
@@ -127,6 +166,44 @@ public final class WebFunctionConfig {
     public static boolean callbackEnabled() {
         final String raw = System.getProperty(PROP_CALLBACK_ENABLED);
         return raw == null || raw.isEmpty() || Boolean.parseBoolean(raw.trim());
+    }
+
+    /**
+     * Master flag for fuel metering Phase 1 (defensive-only layer).
+     *
+     * <p>Off by default so existing deployments continue unchanged. When
+     * enabled, per-invocation fuel cap ({@link #fuelPerInvocationMax}) is
+     * applied at component instantiation, and each host-callback dispatch
+     * charges a fixed {@link #fuelHostCallbackToll} toll deducted from the
+     * per-invocation budget. Traps are surfaced as typed
+     * {@link WfBudgetError} SPARQL errors.
+     *
+     * @see #fuelPerInvocationMax()
+     * @see #fuelHostCallbackToll()
+     */
+    public static boolean fuelEnabled() {
+        final String raw = System.getProperty(PROP_FUEL_ENABLED);
+        return raw != null && !raw.isEmpty() && Boolean.parseBoolean(raw.trim());
+    }
+
+    /**
+     * Per-invocation fuel cap when {@link #fuelEnabled()} is true.
+     * Default 100_000 units — the same order of magnitude as the wasmtime
+     * examples per fuel-implementation.md §6. Deployments recalibrate once
+     * customer workloads are observed.
+     */
+    public static long fuelPerInvocationMax() {
+        return getLong(PROP_FUEL_PER_INVOCATION_MAX).orElse(DEFAULT_FUEL_PER_INVOCATION_MAX);
+    }
+
+    /**
+     * Fixed fuel toll charged before each host-callback dispatches, when
+     * {@link #fuelEnabled()} is true. Default 1_000 units per
+     * fuel-metering.md §7. Uniform across callback types at MVP;
+     * per-callback tolls are Phase-2 refinement.
+     */
+    public static long fuelHostCallbackToll() {
+        return getLong(PROP_FUEL_HOST_CALLBACK_TOLL).orElse(DEFAULT_FUEL_HOST_CALLBACK_TOLL);
     }
 
     private static OptionalLong getLong(final String key) {
