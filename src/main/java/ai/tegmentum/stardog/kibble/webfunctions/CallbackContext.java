@@ -14,6 +14,7 @@ import com.stardog.stark.Value;
 import com.stardog.stark.query.SelectQueryResult;
 
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Per-thread context for v0.3.0 host callback imports.
@@ -73,6 +74,15 @@ public final class CallbackContext {
     private long              tollHostCallbackToll;     // per-callback toll amount
     private ComponentInstance componentInstance;        // null when not yet stamped or non-component mode
 
+    // Capability-policy Phase 1 — effective grant for this invocation.
+    // Stamped by StardogWasmInstance at construction time (after the
+    // enforcer resolves it) so HostCallbacks can consult it on every
+    // dispatch via {@link #capabilityGrant()}. Null when capability
+    // enforcement is disabled (webfunctions.capability.enabled=false) or
+    // when the invocation reaches this context through a code path that
+    // never binds one (isolated unit-test dispatch).
+    private CapabilityGrant   capabilityGrant;
+
     // v0.3.2 prepared-query handles. The Stardog QueryFactory produces a
     // ReadQuery bound to a specific connection + monitor; we re-parse per
     // call today, but Stardog's kernel-level plan cache short-circuits the
@@ -95,6 +105,7 @@ public final class CallbackContext {
         this.tollExhaustedCallback = null;
         this.tollHostCallbackToll = 0L;
         this.componentInstance = null;
+        this.capabilityGrant = null;
     }
 
     /**
@@ -108,6 +119,28 @@ public final class CallbackContext {
      */
     public void setComponentInstance(final ComponentInstance componentInstance) {
         this.componentInstance = componentInstance;
+    }
+
+    /**
+     * Stamp the capability {@link CapabilityGrant} resolved by
+     * {@link CapabilityEnforcer#preInvocation} onto this context so
+     * {@link HostCallbacks} can enforce per-callback checks against it.
+     * Called by {@link StardogWasmInstance} right after instantiation-time
+     * grant resolution; null is a valid state (capability enforcement is
+     * disabled).
+     */
+    public void setCapabilityGrant(final CapabilityGrant grant) {
+        this.capabilityGrant = grant;
+    }
+
+    /**
+     * The effective grant for this invocation, or empty when capability
+     * enforcement is disabled or the context reached the host callback
+     * through a code path that never stamped one. Consumed by
+     * {@link CapabilityEnforcer#perCallback} via {@link HostCallbacks}.
+     */
+    public Optional<CapabilityGrant> capabilityGrant() {
+        return Optional.ofNullable(capabilityGrant);
     }
 
     /**

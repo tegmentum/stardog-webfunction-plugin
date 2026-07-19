@@ -220,6 +220,24 @@ public class StardogWasmInstance implements Closeable {
         ShiroUtils.require(ActionType.EXECUTE, WebFunctionResourceType.INSTANCE, wasmUrl.toString());
     }
 
+    /**
+     * Capability-policy Phase 1 — load the sidecar manifest for
+     * {@code wasmUrl} through {@link ExtensionManifestLoader}. Returns
+     * {@link ExtensionManifest#ABSENT} when the sidecar is missing and
+     * {@code webfunctions.capability.require-manifest} is false; propagates
+     * {@link WfCapabilityError.ManifestMalformed} otherwise so admins see the
+     * parse failure surface. Callers only invoke this when the capability
+     * master gate is on, so an ABSENT return still flows to the resolver.
+     */
+    private static ExtensionManifest loadManifestForCapability(final URL wasmUrl) {
+        try {
+            return ExtensionManifestLoader.load(wasmUrl);
+        } catch (WfCapabilityError.ManifestMalformed malformed) {
+            if (WebFunctionConfig.isRequireManifest()) throw malformed;
+            return ExtensionManifest.ABSENT;
+        }
+    }
+
     public StardogWasmInstance(final URL wasmURL, final MappingDictionary mappingDictionary) throws ExecutionException {
         this(wasmURL);
         this.setMappingDictionary(mappingDictionary);
@@ -238,6 +256,32 @@ public class StardogWasmInstance implements Closeable {
                     cached = componentModeComponentFor(wasmUrl);
                 } catch (IOException ioe) {
                     throw new RuntimeException(ioe);
+                }
+                // Capability-policy Phase 1 — resolve the effective grant
+                // before wiring the linker so we only wire interfaces the
+                // grant permits. When the master gate is off (default),
+                // {@link CapabilityEnforcer#activePolicy} returns empty
+                // and we fall through to the pre-capability code path
+                // that wires every interface unconditionally.
+                //
+                // On LoadTimeDenied, the enforcer's throw unwinds this
+                // constructor; Call.evaluate / WebFunctionServiceOperator
+                // surface it as-is (WfCapabilityError is a StardogException
+                // subtype, mirroring WfBudgetError).
+                final Optional<CapabilityEnforcer> enforcer = CapabilityEnforcer.activePolicy();
+                final CapabilityGrant grant;
+                if (enforcer.isPresent()) {
+                    final ExtensionManifest manifest = loadManifestForCapability(wasmUrl);
+                    final CallbackContext preCtx = CallbackContext.current();
+                    final FuelContext fuelCtx = preCtx == null
+                            ? FuelContext.extract(wasmUrl.toString())
+                            : new FuelContext(FuelContext.extract(wasmUrl.toString()).userId(),
+                                              "",
+                                              wasmUrl.toString());
+                    grant = enforcer.get().preInvocation(fuelCtx, cached, manifest);
+                    if (preCtx != null) preCtx.setCapabilityGrant(grant);
+                } else {
+                    grant = null;
                 }
                 final DefaultLinkingContext.Builder componentLinker = DefaultLinkingContext.builder();
                 if (WebFunctionConfig.callbackEnabled()) {
@@ -258,12 +302,14 @@ public class StardogWasmInstance implements Closeable {
                     // registrations that used to sit here were dead code
                     // (zero consumers on the shape) and were retired; see
                     // webfunction-wit/hostcallbacks-legacy-retirement.md.
-                    componentLinker.addWitHostFunction(
-                        "tegmentum:webfunction/graph-callbacks@0.1.0#execute-query",
-                        HostCallbacks.graphExecuteQuery());
-                    componentLinker.addWitHostFunction(
-                        "tegmentum:webfunction/graph-callbacks@0.1.0#execute-update",
-                        HostCallbacks.graphExecuteUpdate());
+                    if (grant == null || grant.allowsInterface("graph-callbacks")) {
+                        componentLinker.addWitHostFunction(
+                            "tegmentum:webfunction/graph-callbacks@0.1.0#execute-query",
+                            HostCallbacks.graphExecuteQuery());
+                        componentLinker.addWitHostFunction(
+                            "tegmentum:webfunction/graph-callbacks@0.1.0#execute-update",
+                            HostCallbacks.graphExecuteUpdate());
+                    }
                 }
                 // tegmentum:webfunction/http-callbacks@0.1.0 —
                 // outbound HTTP for guests reaching services outside SPARQL
@@ -272,12 +318,14 @@ public class StardogWasmInstance implements Closeable {
                 // external HTTP dep needed. Registered outside the
                 // callback-enabled gate because the flag controls
                 // re-entering the graph; HTTP reaches external services.
-                componentLinker.addWitHostFunction(
-                    "tegmentum:webfunction/http-callbacks@0.1.0#http-get",
-                    HostCallbacks.httpGet());
-                componentLinker.addWitHostFunction(
-                    "tegmentum:webfunction/http-callbacks@0.1.0#http-post-json",
-                    HostCallbacks.httpPostJsonV1());
+                if (grant == null || grant.allowsInterface("http-callbacks")) {
+                    componentLinker.addWitHostFunction(
+                        "tegmentum:webfunction/http-callbacks@0.1.0#http-get",
+                        HostCallbacks.httpGet());
+                    componentLinker.addWitHostFunction(
+                        "tegmentum:webfunction/http-callbacks@0.1.0#http-post-json",
+                        HostCallbacks.httpPostJsonV1());
+                }
                 // tegmentum:webfunction/wasm-callbacks@0.1.0 —
                 // sub-component dispatch. MVP registers both invoke-wasm
                 // (scalar-return) and invoke-wasm-service (list<binding>-
@@ -286,12 +334,14 @@ public class StardogWasmInstance implements Closeable {
                 // is separate future work; a guest that reaches these
                 // callbacks receives a typed policy denial with a
                 // descriptive message instead of a link-time trap.
-                componentLinker.addWitHostFunction(
-                    "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm",
-                    HostCallbacks.invokeWasmV1());
-                componentLinker.addWitHostFunction(
-                    "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm-service",
-                    HostCallbacks.invokeWasmService());
+                if (grant == null || grant.allowsInterface("wasm-callbacks")) {
+                    componentLinker.addWitHostFunction(
+                        "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm",
+                        HostCallbacks.invokeWasmV1());
+                    componentLinker.addWitHostFunction(
+                        "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm-service",
+                        HostCallbacks.invokeWasmService());
+                }
                 this.instance = cached.instantiate(
                         componentLinker.build(),
                         WebFunctionConfig.componentConfigFromSystemProperties());
