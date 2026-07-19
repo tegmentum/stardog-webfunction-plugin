@@ -2,6 +2,8 @@ package ai.tegmentum.stardog.kibble.webfunctions;
 
 import com.complexible.stardog.StardogException;
 
+import java.time.Instant;
+
 /**
  * Typed SPARQL error surface for the fuel-metering Phase 1 defensive layer.
  *
@@ -34,7 +36,8 @@ import com.complexible.stardog.StardogException;
  */
 public abstract sealed class WfBudgetError extends StardogException
         permits WfBudgetError.PerInvocationTrap,
-                WfBudgetError.HostCallbackTollExhausted {
+                WfBudgetError.HostCallbackTollExhausted,
+                WfBudgetError.UserQuotaExhausted {
 
     private final String errorCode;
     private final String jsonPayload;
@@ -177,6 +180,91 @@ public abstract sealed class WfBudgetError extends StardogException
                     + "\"fuel_consumed\":" + fuelConsumed + ","
                     + "\"per_invocation_max\":" + perInvocationMax + ","
                     + "\"host_callback_toll\":" + hostCallbackToll
+                    + "}";
+        }
+    }
+
+    /**
+     * {@code WF_USER_QUOTA_EXHAUSTED} — the invoking user has exceeded their
+     * monthly commercial fuel quota. Customer-actionable: contact the Stardog
+     * administrator to raise the allocation, or wait until the monthly reset.
+     *
+     * <p>Distinct from the two per-invocation defensive traps (which are
+     * extension-author-actionable) — this is the sales-signal error surface
+     * from {@code fuel-metering.md} §9.
+     *
+     * <p>JSON payload schema:
+     * <pre>
+     * {
+     *   "error_code": "WF_USER_QUOTA_EXHAUSTED",
+     *   "user": "&lt;shiro principal or ''&gt;",
+     *   "org": "&lt;shiro-attribute org or ''&gt;",
+     *   "extension": "&lt;ipfs://... or file://... wasm URI&gt;",
+     *   "monthly_used": &lt;long&gt;,
+     *   "monthly_budget": &lt;long&gt;,
+     *   "reset_at": "&lt;ISO-8601 UTC instant&gt;"
+     * }
+     * </pre>
+     */
+    public static final class UserQuotaExhausted extends WfBudgetError {
+
+        private final String userId;
+        private final String orgId;
+        private final String extensionUri;
+        private final long monthlyUsed;
+        private final long monthlyBudget;
+        private final Instant resetAt;
+
+        public UserQuotaExhausted(final String userId,
+                                  final String orgId,
+                                  final String extensionUri,
+                                  final long monthlyUsed,
+                                  final long monthlyBudget,
+                                  final Instant resetAt) {
+            super("WF_USER_QUOTA_EXHAUSTED",
+                  humanMessage(userId, monthlyUsed, monthlyBudget, resetAt),
+                  jsonOf(userId, orgId, extensionUri, monthlyUsed, monthlyBudget, resetAt));
+            this.userId = userId == null ? "" : userId;
+            this.orgId = orgId == null ? "" : orgId;
+            this.extensionUri = extensionUri == null ? "" : extensionUri;
+            this.monthlyUsed = monthlyUsed;
+            this.monthlyBudget = monthlyBudget;
+            this.resetAt = resetAt;
+        }
+
+        public String  userId()        { return userId; }
+        public String  orgId()         { return orgId; }
+        public String  extensionUri()  { return extensionUri; }
+        public long    monthlyUsed()   { return monthlyUsed; }
+        public long    monthlyBudget() { return monthlyBudget; }
+        public Instant resetAt()       { return resetAt; }
+
+        private static String humanMessage(final String userId,
+                                           final long used,
+                                           final long budget,
+                                           final Instant resetAt) {
+            final String u = userId == null || userId.isEmpty() ? "<unknown>" : userId;
+            final String r = resetAt == null ? "<unknown>" : resetAt.toString();
+            return "User '" + u + "' has used " + used + " of " + budget
+                    + " monthly extension fuel units."
+                    + " Contact your Stardog administrator to raise your"
+                    + " allocation, or wait until " + r + " for the monthly reset.";
+        }
+
+        private static String jsonOf(final String userId,
+                                     final String orgId,
+                                     final String extensionUri,
+                                     final long monthlyUsed,
+                                     final long monthlyBudget,
+                                     final Instant resetAt) {
+            return "{"
+                    + "\"error_code\":\"WF_USER_QUOTA_EXHAUSTED\","
+                    + "\"user\":\"" + jsonEscape(userId == null ? "" : userId) + "\","
+                    + "\"org\":\"" + jsonEscape(orgId == null ? "" : orgId) + "\","
+                    + "\"extension\":\"" + jsonEscape(extensionUri == null ? "" : extensionUri) + "\","
+                    + "\"monthly_used\":" + monthlyUsed + ","
+                    + "\"monthly_budget\":" + monthlyBudget + ","
+                    + "\"reset_at\":\"" + jsonEscape(resetAt == null ? "" : resetAt.toString()) + "\""
                     + "}";
         }
     }

@@ -88,23 +88,54 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
         // URI on this frame's CallbackContext so host-callback tolls
         // charge against it and typed error attribution names the wasm
         // extension being invoked.
+        final String extensionUri = wasmIRI == null ? "" : wasmIRI.toString();
         if (WebFunctionConfig.fuelEnabled()) {
             cbCtx.setFuelMeteringContext(
-                    wasmIRI == null ? "" : wasmIRI.toString(),
+                    extensionUri,
                     WebFunctionConfig.fuelPerInvocationMax(),
                     WebFunctionConfig.fuelHostCallbackToll());
         }
+        // Fuel metering Phase 2 — extract Shiro identity + pre-invocation
+        // quota check per fuel-implementation.md §4 steps 2-6. No-op when
+        // fuel is disabled or per-user quota unset (activePolicy() returns
+        // empty). Throws WfBudgetError.UserQuotaExhausted on cap hit;
+        // propagates through the catch chain below intact.
+        final FuelContext fuelCtx = FuelContext.extract(extensionUri);
+        final UserFuelPolicy policy = UserFuelPolicy.activePolicy().orElse(null);
+        if (policy != null) {
+            policy.preInvocation(fuelCtx);
+        }
         try {
-            return computeNextInternal();
+            final Solution s = computeNextInternal();
+            // Post-invocation counter increment for each yielded solution
+            // (matches memo §4 step 11 "on success"). Use tollUsed as an
+            // observed-lower-bound cost, clamped to at least 1 unit so the
+            // counter advances even when the extension makes no host
+            // callbacks. Only account when a real solution was produced
+            // (endOfData signals streaming complete; skip the tail no-op).
+            if (policy != null && s != null) {
+                policy.postInvocation(fuelCtx, Math.max(1L, cbCtx.tollUsed()));
+            }
+            return s;
         } catch (WfBudgetError e) {
             // Already-typed — rethrow so Stardog's query engine surfaces
             // it as a plugin error with the JSON payload intact.
             recordAttributionOnce(e, cbCtx);
+            if (policy != null && !(e instanceof WfBudgetError.UserQuotaExhausted)) {
+                // Charge the observed cost even on trap paths; do NOT charge
+                // on a pre-check quota-exhaustion (nothing ran).
+                policy.postInvocation(fuelCtx, WebFunctionConfig.fuelPerInvocationMax());
+            }
             throw e;
         } catch (RuntimeException e) {
             final WfBudgetError typed = FuelTrapMapper.mapOrNull(e, cbCtx);
             if (typed != null) {
                 recordAttributionOnce(typed, cbCtx);
+            }
+            if (policy != null && !(typed instanceof WfBudgetError.UserQuotaExhausted)) {
+                policy.postInvocation(fuelCtx, WebFunctionConfig.fuelPerInvocationMax());
+            }
+            if (typed != null) {
                 throw typed;
             }
             throw e;

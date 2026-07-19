@@ -114,33 +114,57 @@ public final class Call extends AbstractExpression implements UserDefinedFunctio
                             // budget + extension URI on the CallbackContext so
                             // host-callback tolls charge against this frame's
                             // budget and typed error attribution knows which
-                            // extension tripped the cap.
-                            // Fuel-metering Phase 1 attribution — capture the
-                            // extension URI up-front (needed on both the success
-                            // and trap paths). Filter-function wf:call has no
-                            // ExecutionContext in scope, so no Stardog QueryId
-                            // is available on this path — we record "".
-                            final String attributionUri =
-                                    values[0] == null ? "" : values[0].toString();
+                            // extension tripped the cap. Filter-function wf:call
+                            // has no ExecutionContext in scope, so no Stardog
+                            // QueryId is available on this path — attribution
+                            // rows record "".
+                            final String extensionUri = values[0] == null ? "" : values[0].toString();
                             if (WebFunctionConfig.fuelEnabled()) {
                                 cbCtx.setFuelMeteringContext(
-                                        attributionUri,
+                                        extensionUri,
                                         WebFunctionConfig.fuelPerInvocationMax(),
                                         WebFunctionConfig.fuelHostCallbackToll());
+                            }
+                            // Fuel metering Phase 2 — resolve Shiro identity +
+                            // pre-invocation user-quota check per
+                            // fuel-implementation.md §4 steps 3-6. No-op when
+                            // fuel disabled or per-user quota unset; throws
+                            // WfBudgetError.UserQuotaExhausted on cap hit.
+                            final FuelContext fuelCtx = FuelContext.extract(extensionUri);
+                            final ai.tegmentum.stardog.kibble.webfunctions.UserFuelPolicy policy =
+                                    UserFuelPolicy.activePolicy().orElse(null);
+                            if (policy != null) {
+                                policy.preInvocation(fuelCtx);
                             }
                             try (StardogWasmInstance stardogWasmInstance = StardogWasmInstance.from(values[0], valueSolution.getDictionary())) {
                                 try(final SelectQueryResult selectQueryResult = stardogWasmInstance.evaluate(Arrays.stream(values).skip(1).toArray(Value[]::new))) {
                                     final ValueOrError result =
                                             stardogWasmInstance.selectQueryResultToValueOrError(selectQueryResult);
+                                    // Attribution first so the row logs the attempted
+                                    // invocation even if the Phase 2 charge fails.
                                     AttributionRing.recordSuccess(
-                                            attributionUri, cbCtx.tollUsed(), "");
+                                            extensionUri, cbCtx.tollUsed(), "");
+                                    if (policy != null) {
+                                        policy.postInvocation(fuelCtx,
+                                                Math.max(1L, cbCtx.tollUsed()));
+                                    }
                                     return result;
                                 }
                             } catch (IOException | ExecutionException ex) {
                                 final WfBudgetError typed = FuelTrapMapper.mapOrNull(ex, cbCtx);
                                 if (typed != null) {
                                     AttributionRing.recordTrap(
-                                            attributionUri, typed, cbCtx.tollUsed(), "");
+                                            extensionUri, typed, cbCtx.tollUsed(), "");
+                                }
+                                // Charge on trap: cap as upper bound (guest necessarily
+                                // hit the cap to trap). Skipped for UserQuotaExhausted —
+                                // that error is thrown pre-invocation and consumes no fuel.
+                                if (policy != null
+                                        && !(typed instanceof WfBudgetError.UserQuotaExhausted)) {
+                                    policy.postInvocation(fuelCtx,
+                                            WebFunctionConfig.fuelPerInvocationMax());
+                                }
+                                if (typed != null) {
                                     throw typed;
                                 }
                                 return ValueOrError.Error;
@@ -151,7 +175,15 @@ public final class Call extends AbstractExpression implements UserDefinedFunctio
                                 final WfBudgetError typed = FuelTrapMapper.mapOrNull(ex, cbCtx);
                                 if (typed != null) {
                                     AttributionRing.recordTrap(
-                                            attributionUri, typed, cbCtx.tollUsed(), "");
+                                            extensionUri, typed, cbCtx.tollUsed(), "");
+                                }
+                                if (policy != null
+                                        && !(typed instanceof WfBudgetError.UserQuotaExhausted)
+                                        && !(ex instanceof WfBudgetError.UserQuotaExhausted)) {
+                                    policy.postInvocation(fuelCtx,
+                                            Math.max(1L, cbCtx.tollUsed()));
+                                }
+                                if (typed != null) {
                                     throw typed;
                                 }
                                 throw ex;
