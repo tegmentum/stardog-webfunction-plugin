@@ -112,6 +112,27 @@ This is a Stardog plugin that enables execution of WebAssembly (WASM) functions 
 
 RDF vocabulary IRI remains `http://semantalytics.com/2021/03/ns/stardog/webfunction/` for identifier stability across the semantalytics → tegmentum org migration; do not change it.
 
+### Composition admin queries
+
+Compose lands its Turtle output in a dedicated named graph
+`<urn:stardog:webfunction:compositions>` inside the
+`system-webfunctions-capability` database — a peer of the
+`cap:allow*` grants graph (default) and the
+`<urn:stardog:webfunction:capability:asks>` graph. The writer
+(`ComposePolicyStoreWriter`) is a straight projection of the
+orchestrator's `plan-to-turtle` output under the `comp:` vocabulary
+(`<http://tegmentum.ai/ns/composition/>`, owned by
+`webassembly-component-orchestration/libs/compose-rdf`). No
+plugin-side predicates are added on top. Composed wasm blobs
+persist to `${stardog.home}/webfunctions-compose/artifacts/<hex>.wasm`
+and load as first-class extensions via the `sha256://` URL scheme
+(`Sha256ArtifactUrlHandler`).
+
+For SPARQL patterns — list every composition, reverse-lookup by
+component, diff composed CIDs against grants, retire a composition,
+and the one-pass review pattern combining composition + ask + grant
+graphs — see `~/git/stardog-webfunction-wit/docs/design/composition-admin.md`.
+
 ### Development Notes
 
 **Rust WASM Functions:**
