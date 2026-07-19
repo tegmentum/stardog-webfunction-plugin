@@ -52,6 +52,14 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
     private final List<QueryTerm> results;
     private final StardogWasmInstance stardogWasmInstance;
 
+    // Fuel-metering Phase 1 attribution — the operator's wasm invocation
+    // (stardogWasmInstance.evaluate) runs at most once per operator
+    // lifecycle, but computeNext() is called repeatedly to iterate the
+    // resulting binding stream. This flag makes the append idempotent
+    // across the iteration so exactly one AttributionRow lands per
+    // wf:call, not one per row of output.
+    private boolean attributionRecorded = false;
+
     public WebFunctionServiceOperator(final ExecutionContext theExecutionContext,
                                       final Value wasmIRI,
                                       final List<QueryTerm> args,
@@ -91,13 +99,59 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
         } catch (WfBudgetError e) {
             // Already-typed — rethrow so Stardog's query engine surfaces
             // it as a plugin error with the JSON payload intact.
+            recordAttributionOnce(e, cbCtx);
             throw e;
         } catch (RuntimeException e) {
             final WfBudgetError typed = FuelTrapMapper.mapOrNull(e, cbCtx);
-            if (typed != null) throw typed;
+            if (typed != null) {
+                recordAttributionOnce(typed, cbCtx);
+                throw typed;
+            }
             throw e;
         } finally {
             CallbackContext.unbindIfOutermost(cbCtx);
+        }
+    }
+
+    /**
+     * Emit exactly one attribution row per operator lifetime, guarded by
+     * {@link #attributionRecorded}. Called from the trap path in
+     * {@link #computeNext()} and (with {@code trap=null}) from the success
+     * path in {@link #computeNextInternal()} once evaluate has returned
+     * a live SelectQueryResult.
+     *
+     * <p>{@code queryId} is best-effort — pulled from the bound
+     * {@link com.complexible.stardog.plan.eval.ExecutionMonitor}. When the
+     * monitor is unavailable (test/embedded contexts), records "".
+     */
+    private void recordAttributionOnce(final WfBudgetError trap,
+                                       final CallbackContext cbCtx) {
+        if (attributionRecorded) return;
+        if (!WebFunctionConfig.attributionLogEnabled()) return;
+        attributionRecorded = true;
+        final String uri = wasmIRI == null ? "" : wasmIRI.toString();
+        final long fuel = cbCtx == null ? 0L : cbCtx.tollUsed();
+        final String queryId = safeQueryId();
+        if (trap == null) {
+            AttributionRing.recordSuccess(uri, fuel, queryId);
+        } else {
+            AttributionRing.recordTrap(uri, trap, fuel, queryId);
+        }
+    }
+
+    private String safeQueryId() {
+        try {
+            if (mExecutionContext == null) return "";
+            final com.complexible.stardog.plan.eval.ExecutionMonitor monitor =
+                    mExecutionContext.getMonitor();
+            if (monitor == null) return "";
+            final String id = monitor.getQueryId();
+            return id == null ? "" : id;
+        } catch (RuntimeException ignore) {
+            // Monitor state can throw when the query has been cancelled or
+            // the context is torn down; a missing queryId is not worth
+            // failing an attribution write over.
+            return "";
         }
     }
 
@@ -152,6 +206,11 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
 
                     if (Arrays.stream(valueOrErrors).noneMatch(ValueOrError::isError)) {
                         selectQueryResult = stardogWasmInstance.evaluate(Arrays.stream(valueOrErrors).map(ValueOrError::value).toArray(Value[]::new));
+                        // Fuel-metering Phase 1 attribution — evaluate
+                        // returned; record SUCCESS exactly once per
+                        // operator lifetime (subsequent computeNext calls
+                        // no-op via attributionRecorded).
+                        recordAttributionOnce(null, CallbackContext.current());
                     } else {
                         stardogWasmInstance.close();
                         return endOfData();

@@ -115,26 +115,45 @@ public final class Call extends AbstractExpression implements UserDefinedFunctio
                             // host-callback tolls charge against this frame's
                             // budget and typed error attribution knows which
                             // extension tripped the cap.
+                            // Fuel-metering Phase 1 attribution — capture the
+                            // extension URI up-front (needed on both the success
+                            // and trap paths). Filter-function wf:call has no
+                            // ExecutionContext in scope, so no Stardog QueryId
+                            // is available on this path — we record "".
+                            final String attributionUri =
+                                    values[0] == null ? "" : values[0].toString();
                             if (WebFunctionConfig.fuelEnabled()) {
                                 cbCtx.setFuelMeteringContext(
-                                        values[0] == null ? "" : values[0].toString(),
+                                        attributionUri,
                                         WebFunctionConfig.fuelPerInvocationMax(),
                                         WebFunctionConfig.fuelHostCallbackToll());
                             }
                             try (StardogWasmInstance stardogWasmInstance = StardogWasmInstance.from(values[0], valueSolution.getDictionary())) {
                                 try(final SelectQueryResult selectQueryResult = stardogWasmInstance.evaluate(Arrays.stream(values).skip(1).toArray(Value[]::new))) {
-                                    return stardogWasmInstance.selectQueryResultToValueOrError(selectQueryResult);
+                                    final ValueOrError result =
+                                            stardogWasmInstance.selectQueryResultToValueOrError(selectQueryResult);
+                                    AttributionRing.recordSuccess(
+                                            attributionUri, cbCtx.tollUsed(), "");
+                                    return result;
                                 }
                             } catch (IOException | ExecutionException ex) {
                                 final WfBudgetError typed = FuelTrapMapper.mapOrNull(ex, cbCtx);
-                                if (typed != null) throw typed;
+                                if (typed != null) {
+                                    AttributionRing.recordTrap(
+                                            attributionUri, typed, cbCtx.tollUsed(), "");
+                                    throw typed;
+                                }
                                 return ValueOrError.Error;
                             } catch (RuntimeException ex) {
                                 // Direct throws from CallbackContext.chargeToll
                                 // (WfBudgetError.HostCallbackTollExhausted) land
                                 // here too — same promotion path.
                                 final WfBudgetError typed = FuelTrapMapper.mapOrNull(ex, cbCtx);
-                                if (typed != null) throw typed;
+                                if (typed != null) {
+                                    AttributionRing.recordTrap(
+                                            attributionUri, typed, cbCtx.tollUsed(), "");
+                                    throw typed;
+                                }
                                 throw ex;
                             } finally {
                                 CallbackContext.unbindIfOutermost(cbCtx);
