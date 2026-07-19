@@ -107,6 +107,20 @@
             <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
+        <!--
+            org.tomlj:tomlj — TOML parser used by ExtensionManifestLoader for
+            the capability-policy sidecar manifest (capability-implementation
+            memo §3). Chosen over com.moandjiezana.toml for source-positional
+            error messages via TomlParseError.position() — the manifest is
+            author-facing and admin-reviewed, so parse errors need line/column.
+            Pure Java, no transitive Bouncy Castle or Netty; adds ~350 KB
+            shaded against the plugin's ~40 MB jar.
+        -->
+        <dependency>
+            <groupId>org.tomlj</groupId>
+            <artifactId>tomlj</artifactId>
+            <version>1.1.0</version>
+        </dependency>
         <dependency>
             <groupId>ai.tegmentum.webassembly4j</groupId>
             <artifactId>webassembly4j-api</artifactId>
