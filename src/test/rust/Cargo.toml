@@ -1,30 +1,15 @@
 [workspace]
 
-# Component-model crates (to_upper_component, multi_var_component,
-# sum_component) were retired here and moved to
-# webfunctions/crates/example-{uppercase-extension,multi-var-filter,sum-aggregate}
-# so the four engine bindings (stardog, jena, rdf4j, oxigraph) share
-# one wasm per test surface. The remaining members below are
-# stardog-plugin-internal module-mode fixtures.
-members = [
-    "aggregate/sum",
-    "function/concat",
-    "function/const0x1x1",
-    "function/const0x1x2",
-    "function/const0x2x1",
-    "function/const0x2x2",
-    "function/doc_test",
-    "function/echo1x1x1",
-    "function/echo1x2x1",
-    "function/echo2x1x1",
-    "function/echo2x2x1",
-    "function/empty",
-    "function/is_numeric",
-    "function/mapping_dictionary_add",
-    "function/mapping_dictionary_get",
-    "function/array_of",
-    "function/to_upper",
-]
+# All plugin-internal module-mode fixtures were retired here; the
+# component-mode crates (to_upper_component, multi_var_component,
+# sum_component) live at webfunctions/crates/example-{uppercase-extension,
+# multi-var-filter,sum-aggregate} so the four engine bindings (stardog,
+# jena, rdf4j, oxigraph) share one wasm per test surface. This workspace
+# is retained as an empty shell so `cargo make build` inside
+# src/test/rust/ completes as a no-op — WasmTestSuite.beforeClass still
+# shells out to it and any non-zero exit would masquerade as a test
+# failure.
+members = []
 
 [profile.release]
 debug = false
