@@ -44,6 +44,8 @@ public final class ComposeOrchestratorClient {
     static final String EXPORT_EMIT_GET_ARTIFACT     = "sys:compose/emit@1.0.0#get-artifact";
     static final String EXPORT_RDF_PLAN_TO_TURTLE    = "sys:compose/rdf@1.0.0#plan-to-turtle";
     static final String EXPORT_RDF_PLAN_TO_TURTLE_WI = "sys:compose/rdf@1.0.0#plan-to-turtle-with-iri";
+    static final String EXPORT_RDF_PLAN_FROM_TURTLE  = "sys:compose/rdf@1.0.0#plan-from-turtle";
+    static final String EXPORT_RDF_PLAN_FROM_TURTLE_WI = "sys:compose/rdf@1.0.0#plan-from-turtle-with-iri";
 
     private final ComposeOrchestratorInstance orchestrator;
 
@@ -139,7 +141,46 @@ public final class ComposeOrchestratorClient {
         return callTurtle(EXPORT_RDF_PLAN_TO_TURTLE_WI, new Object[]{planCbor, planIri});
     }
 
+    /**
+     * Parse a Turtle document into canonical CBOR plan bytes via
+     * {@code sys:compose/rdf@1.0.0#plan-from-turtle}. The Turtle must
+     * describe the plan under the orchestrator's default plan IRI
+     * ({@code urn:composition:plan}). The returned CBOR is byte-identical
+     * to what {@link #compose(PlanV1)}'s implicit {@code plan.serialize}
+     * would emit for the reconstructed plan, so callers can hand the
+     * bytes straight to {@link ComposeAdmin#compose(byte[])}.
+     */
+    public byte[] planFromTurtle(final String turtle) {
+        Objects.requireNonNull(turtle, "turtle");
+        return callBytes(EXPORT_RDF_PLAN_FROM_TURTLE, new Object[]{turtle});
+    }
+
+    /**
+     * Same as {@link #planFromTurtle(String)} but the caller specifies
+     * the plan subject IRI — must match whatever IRI the Turtle uses.
+     */
+    public byte[] planFromTurtle(final String turtle, final String planIri) {
+        Objects.requireNonNull(turtle, "turtle");
+        Objects.requireNonNull(planIri, "planIri");
+        return callBytes(EXPORT_RDF_PLAN_FROM_TURTLE_WI, new Object[]{turtle, planIri});
+    }
+
     // --- helpers -----------------------------------------------------
+
+    private byte[] callBytes(final String export, final Object[] args) {
+        final ComponentInstance instance;
+        try {
+            instance = orchestrator.instance();
+        } catch (IOException e) {
+            throw new ComposeException("orchestrator instance unavailable: " + e.getMessage());
+        }
+        final Object result = invokeOrThrow(instance, export, args);
+        if (!(result instanceof byte[])) {
+            throw new ComposeException("expected byte[] from " + export + ", got "
+                    + (result == null ? "null" : result.getClass().getName()));
+        }
+        return (byte[]) result;
+    }
 
     private String callTurtle(final String export, final Object[] args) {
         final ComponentInstance instance;

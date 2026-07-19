@@ -76,6 +76,49 @@ public class TestComposeOrchestratorClient {
     }
 
     @Test
+    public void planFromTurtleDispatchesToRdfExport() {
+        final FakeInstance fake = new FakeInstance();
+        final byte[] cbor = new byte[]{0x77, 0x66, 0x11};
+        fake.responseFor(ComposeOrchestratorClient.EXPORT_RDF_PLAN_FROM_TURTLE, cbor);
+        final ComposeOrchestratorClient client =
+                new ComposeOrchestratorClient(new NoopOrchestratorInstance(fake));
+        final byte[] result = client.planFromTurtle("@prefix : <urn:> .\n");
+        assertThat(result).containsExactly(0x77, 0x66, 0x11);
+        assertThat(fake.callsInOrder).containsExactly(
+                ComposeOrchestratorClient.EXPORT_RDF_PLAN_FROM_TURTLE);
+        assertThat(fake.lastArgs.get(0))
+                .as("turtle string is the only arg")
+                .isEqualTo("@prefix : <urn:> .\n");
+    }
+
+    @Test
+    public void planFromTurtleWithIriDispatchesToWithIriExport() {
+        final FakeInstance fake = new FakeInstance();
+        final byte[] cbor = new byte[]{0x01, 0x02};
+        fake.responseFor(ComposeOrchestratorClient.EXPORT_RDF_PLAN_FROM_TURTLE_WI, cbor);
+        final ComposeOrchestratorClient client =
+                new ComposeOrchestratorClient(new NoopOrchestratorInstance(fake));
+        client.planFromTurtle("@prefix : <urn:> .\n", "urn:my:plan");
+        assertThat(fake.callsInOrder).containsExactly(
+                ComposeOrchestratorClient.EXPORT_RDF_PLAN_FROM_TURTLE_WI);
+        assertThat(fake.lastArgs.get(1))
+                .as("plan iri is second arg")
+                .isEqualTo("urn:my:plan");
+    }
+
+    @Test
+    public void planFromTurtlePropagatesExecutionExceptionAsComposeException() {
+        final FakeInstance fake = new FakeInstance();
+        fake.errorFor(ComposeOrchestratorClient.EXPORT_RDF_PLAN_FROM_TURTLE,
+                "invalid-input");
+        final ComposeOrchestratorClient client =
+                new ComposeOrchestratorClient(new NoopOrchestratorInstance(fake));
+        assertThatThrownBy(() -> client.planFromTurtle("not turtle"))
+                .isInstanceOf(ComposeException.class)
+                .hasMessageContaining("invalid-input");
+    }
+
+    @Test
     public void planToTurtleWithIriDispatchesToWithIriExport() {
         final FakeInstance fake = new FakeInstance();
         fake.responseFor(
