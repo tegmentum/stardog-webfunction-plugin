@@ -44,6 +44,11 @@ public final class HostCallbacks {
                     "wf callback: no context bound — needs SERVICE wf:call to "
                     + "carry the ExecutionContext through")) };
             }
+            // Phase 1 fuel-metering toll — throws WfBudgetError on
+            // exhaustion, unwinds the wasm frame, gets promoted to a
+            // typed WF_HOST_CALLBACK_TOLL_EXHAUSTED at the outer
+            // Call.evaluate / WebFunctionServiceOperator catch site.
+            ctx.chargeToll("host.execute-query");
             try {
                 final String sparql = ((ComponentVal) args[0]).asString();
                 final Map<String, Value> initial = decodeBindings((ComponentVal) args[1]);
@@ -75,6 +80,7 @@ public final class HostCallbacks {
                 return new Object[] { ComponentVal.err(ComponentVal.string(
                     "wf callback: no context bound")) };
             }
+            ctx.chargeToll("host.follow-predicate");
             try {
                 final Value subj = decodeNode((ComponentVal) args[0]);
                 final Value pred = decodeNode((ComponentVal) args[1]);
@@ -108,6 +114,7 @@ public final class HostCallbacks {
                 return new Object[] { ComponentVal.err(ComponentVal.string(
                     "wf callback: no context bound")) };
             }
+            ctx.chargeToll("host.prepare-query");
             try {
                 final String sparql = ((ComponentVal) args[0]).asString();
                 return new Object[] { ComponentVal.ok(ComponentVal.u32((long) ctx.prepare(sparql))) };
@@ -131,6 +138,7 @@ public final class HostCallbacks {
                 return new Object[] { ComponentVal.err(ComponentVal.string(
                     "wf callback: no context bound")) };
             }
+            ctx.chargeToll("host.run-prepared");
             try {
                 final int handle = (int) ((ComponentVal) args[0]).asU32();
                 final Map<String, Value> initial = decodeBindings((ComponentVal) args[1]);
@@ -162,6 +170,7 @@ public final class HostCallbacks {
                     "wf callback: no context bound — SERVICE wf:call binds one, "
                     + "filter-function wf:call does not")) };
             }
+            ctx.chargeToll("host.execute-update");
             try {
                 final String sparql = ((ComponentVal) args[0]).asString();
                 final Map<String, Value> initial = decodeBindings((ComponentVal) args[1]);
@@ -213,6 +222,7 @@ public final class HostCallbacks {
                     + "on the CallbackContext — bind with `bind(dictionary)` or "
                     + "`bind(execCtx, dictionary)` at the top of the wf:call frame")) };
             }
+            ctx.chargeToll("host.invoke-wasm");
             try {
                 final String url = ((ComponentVal) args[0]).asString();
                 final Value urlValue = Values.iri(url);
@@ -293,6 +303,7 @@ public final class HostCallbacks {
                     graphCallError("backend-error",
                         "wf callback: no context bound")) };
             }
+            ctx.chargeToll("graph-callbacks.execute-query");
             try {
                 final String sparql = ((ComponentVal) args[0]).asString();
                 ctx.enter();
@@ -343,6 +354,7 @@ public final class HostCallbacks {
                     graphCallError("backend-error",
                         "wf callback: no context bound")) };
             }
+            ctx.chargeToll("graph-callbacks.execute-update");
             try {
                 final String sparql = ((ComponentVal) args[0]).asString();
                 ctx.enter();
@@ -464,6 +476,13 @@ public final class HostCallbacks {
      */
     public static WitHostFunction httpGet() {
         return args -> {
+            // Fuel toll — HTTP callbacks pay the toll same as graph callbacks.
+            // Skips the charge when no context is bound (isolated
+            // unit-test / direct-instantiation flows without
+            // Call.evaluate/WebFunctionServiceOperator wrapping), so
+            // outside-the-invocation-hot-path calls stay unmetered.
+            final CallbackContext ctx = CallbackContext.current();
+            if (ctx != null) ctx.chargeToll("http-callbacks.http-get");
             try {
                 final String url = ((ComponentVal) args[0]).asString();
                 final List<ComponentVal> headers = ((ComponentVal) args[1]).asList();
@@ -488,6 +507,8 @@ public final class HostCallbacks {
      */
     public static WitHostFunction httpPostJsonV1() {
         return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            if (ctx != null) ctx.chargeToll("http-callbacks.http-post-json");
             try {
                 final String url = ((ComponentVal) args[0]).asString();
                 final String body = ((ComponentVal) args[1]).asString();
@@ -589,9 +610,13 @@ public final class HostCallbacks {
      * interface can link, but the actual dispatch table isn't populated yet.
      */
     public static WitHostFunction invokeWasmV1() {
-        return args -> new Object[] { ComponentVal.err(wasmCallError("not-permitted",
-            "invoke-wasm: not implemented on JVM host (MVP stub — full sub-component "
-            + "dispatch is future work)")) };
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            if (ctx != null) ctx.chargeToll("wasm-callbacks.invoke-wasm");
+            return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
+                "invoke-wasm: not implemented on JVM host (MVP stub — full sub-component "
+                + "dispatch is future work)")) };
+        };
     }
 
     /**
@@ -603,9 +628,13 @@ public final class HostCallbacks {
      * component composition is separate future work.
      */
     public static WitHostFunction invokeWasmService() {
-        return args -> new Object[] { ComponentVal.err(wasmCallError("not-permitted",
-            "invoke-wasm-service: not implemented on JVM host (MVP stub — full "
-            + "sub-component dispatch is future work)")) };
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            if (ctx != null) ctx.chargeToll("wasm-callbacks.invoke-wasm-service");
+            return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
+                "invoke-wasm-service: not implemented on JVM host (MVP stub — full "
+                + "sub-component dispatch is future work)")) };
+        };
     }
 
     private static ComponentVal wasmCallError(final String armName, final String message) {

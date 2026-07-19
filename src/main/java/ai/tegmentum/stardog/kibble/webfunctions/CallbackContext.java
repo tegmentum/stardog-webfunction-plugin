@@ -51,6 +51,22 @@ public final class CallbackContext {
     private final int maxRows;
     private int depth = 0;
 
+    // Fuel metering Phase 1 — per-invocation defensive toll accounting.
+    //
+    // Populated when the outer wf:call frame runs setFuelMeteringContext
+    // (from Call.evaluate / WebFunctionServiceOperator.computeNext, before
+    // dispatch). Java-side per-invocation counter — see the note in
+    // fuel-implementation.md §8 "honest failure paths": wasmtime4j-provider
+    // does not surface the store's consumeFuel API to component-mode
+    // callers today, so Phase 1 tracks the toll on the Java side. A
+    // wasmtime-store-level toll deduction is Phase-2 (or 1.x) work
+    // pending a small addition on the webassembly4j side.
+    private String  extensionUri;                 // "" until set
+    private long    tollBudget;                   // 0 disables toll checks
+    private long    tollUsed;                     // running total this invocation
+    private String  tollExhaustedCallback;        // sticky flag; null when not tripped
+    private long    tollHostCallbackToll;         // per-callback toll amount
+
     // v0.3.2 prepared-query handles. The Stardog QueryFactory produces a
     // ReadQuery bound to a specific connection + monitor; we re-parse per
     // call today, but Stardog's kernel-level plan cache short-circuits the
@@ -67,6 +83,99 @@ public final class CallbackContext {
         this.dictionary = dictionary;
         this.maxDepth = maxDepth;
         this.maxRows = maxRows;
+        this.extensionUri = "";
+        this.tollBudget = 0L;
+        this.tollUsed = 0L;
+        this.tollExhaustedCallback = null;
+        this.tollHostCallbackToll = 0L;
+    }
+
+    /**
+     * Bind the fuel-metering state for the current wf:call frame. Called
+     * from Call.evaluate / WebFunctionServiceOperator.computeNext after
+     * the CallbackContext is bound and BEFORE the wasm instance is
+     * invoked. No-op when {@link WebFunctionConfig#fuelEnabled()} is
+     * false (Phase-1 defaults). Nested frames inherit the outer frame's
+     * budget — same "reuse existing binding" invariant CallbackContext
+     * already applies to the ExecutionContext.
+     *
+     * @param extensionUri the wasm URI being invoked (attribution field)
+     * @param tollBudget total per-invocation toll budget (fuel units)
+     * @param hostCallbackToll fixed toll amount per host-callback dispatch
+     */
+    public void setFuelMeteringContext(final String extensionUri,
+                                        final long tollBudget,
+                                        final long hostCallbackToll) {
+        // Only stamp on the outermost frame (depth == 0). Nested frames
+        // (invoke-wasm from within a host callback) inherit the outer
+        // budget so a spammy chain still trips the same cap.
+        if (this.tollBudget != 0L) return;
+        this.extensionUri = extensionUri == null ? "" : extensionUri;
+        this.tollBudget = tollBudget;
+        this.tollUsed = 0L;
+        this.tollExhaustedCallback = null;
+        this.tollHostCallbackToll = hostCallbackToll;
+    }
+
+    /**
+     * The extension URI stamped on this frame's fuel metering context,
+     * used for attribution in {@link WfBudgetError} payloads. Empty
+     * string when unset (fuel disabled, or wf:call frame never got
+     * around to stamping).
+     */
+    public String extensionUri() {
+        return extensionUri;
+    }
+
+    /**
+     * Total toll fuel consumed across all host-callback dispatches in
+     * this invocation. Useful in {@link WfBudgetError.PerInvocationTrap}
+     * post-mortem to attribute how much of the per-invocation cap went
+     * to host-callback toll vs. guest compute (the latter is not
+     * distinguishable from Java-side without wasmtime4j surfacing
+     * fuelConsumed to component-mode callers — Phase-2 work).
+     */
+    public long tollUsed() {
+        return tollUsed;
+    }
+
+    /**
+     * Non-null when this invocation tripped the toll cap in a host
+     * callback; the value is the callback name. {@link Call#evaluate}
+     * and {@link WebFunctionServiceOperator#computeNext} check this on
+     * catch to promote the outer trap to a
+     * {@link WfBudgetError.HostCallbackTollExhausted} instead of a
+     * generic {@link WfBudgetError.PerInvocationTrap}.
+     */
+    public String tollExhaustedCallback() {
+        return tollExhaustedCallback;
+    }
+
+    /**
+     * Charge the configured host-callback toll for a named callback
+     * before it dispatches. No-op when the toll budget is zero (fuel
+     * disabled). If the toll would overflow the per-invocation budget,
+     * stamps {@link #tollExhaustedCallback()} and throws
+     * {@link WfBudgetError.HostCallbackTollExhausted} so the wasm frame
+     * unwinds — the outer try/catch in Call.evaluate /
+     * WebFunctionServiceOperator promotes the caught error into the
+     * typed SPARQL surface. Callers pass the WIT-path callback name
+     * (e.g. {@code "graph-callbacks.execute-query"}) that shows up in
+     * the JSON payload.
+     */
+    public void chargeToll(final String callbackName) {
+        if (tollBudget <= 0L) return;                    // fuel metering off
+        if (tollHostCallbackToll <= 0L) return;          // toll disabled
+        if (tollUsed + tollHostCallbackToll > tollBudget) {
+            tollExhaustedCallback = callbackName;
+            throw new WfBudgetError.HostCallbackTollExhausted(
+                    extensionUri,
+                    callbackName,
+                    tollUsed,
+                    tollBudget,
+                    tollHostCallbackToll);
+        }
+        tollUsed += tollHostCallbackToll;
     }
 
     /** Bind without a query context — sub-queries via execute-query unavailable. */
