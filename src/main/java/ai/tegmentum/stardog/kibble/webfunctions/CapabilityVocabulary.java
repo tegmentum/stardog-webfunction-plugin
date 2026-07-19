@@ -40,10 +40,17 @@ public final class CapabilityVocabulary {
             "http://semantalytics.com/2021/03/ns/stardog/webfunction/capability#";
 
     // Predicates.
-    public static final String CAP_TRUSTED         = NAMESPACE + "trusted";
-    public static final String CAP_ALLOW_INTERFACE = NAMESPACE + "allowInterface";
-    public static final String CAP_ALLOW_METHOD    = NAMESPACE + "allowMethod";
-    public static final String CAP_ALLOW_HOST      = NAMESPACE + "allowHost";
+    public static final String CAP_TRUSTED           = NAMESPACE + "trusted";
+    public static final String CAP_ALLOW_INTERFACE   = NAMESPACE + "allowInterface";
+    public static final String CAP_ALLOW_METHOD      = NAMESPACE + "allowMethod";
+    public static final String CAP_ALLOW_HOST        = NAMESPACE + "allowHost";
+    // Phase 5 — fine-grained per-argument allowlists on axes not covered
+    // by interface/method/host. allowHttpPath is a string-prefix match on
+    // "host+path" (e.g. "api.acme.com/public/"); allowWasmCallee is an
+    // exact IRI match on the invoke-wasm callee load URL (any scheme —
+    // ipfs://, https://, file://, ...).
+    public static final String CAP_ALLOW_HTTP_PATH   = NAMESPACE + "allowHttpPath";
+    public static final String CAP_ALLOW_WASM_CALLEE = NAMESPACE + "allowWasmCallee";
 
     // Interface IRIs — enumerate the 11 known host-callback surfaces from
     // Phase 1's callback wiring so admin tooling has a stable target set.

@@ -86,4 +86,16 @@ public record HostAllowlist(
     public int size() {
         return patterns.size();
     }
+
+    /**
+     * True when no patterns are configured. Phase 5 enforcement treats an
+     * empty allowlist as "no restriction beyond the coarser interface/
+     * method checks" — only NON-EMPTY allowlists impose restrictions, so
+     * a policy that grants {@code cap:allowInterface cap:HttpCallbacks}
+     * without any {@code cap:allowHost} triples still passes the host
+     * check.
+     */
+    public boolean isEmpty() {
+        return patterns.isEmpty();
+    }
 }

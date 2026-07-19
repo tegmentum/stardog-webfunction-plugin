@@ -81,6 +81,13 @@ public class TestHostAllowlist {
         assertThat(HostAllowlist.ALLOW_NONE.matches("api.acme.com")).isFalse();
         assertThat(HostAllowlist.ALLOW_NONE.matches("*.anything")).isFalse();
         assertThat(HostAllowlist.ALLOW_NONE.size()).isZero();
+        assertThat(HostAllowlist.ALLOW_NONE.isEmpty()).isTrue();
+    }
+
+    @Test
+    public void isEmptyDiscriminatesConfiguredFromEmpty() {
+        assertThat(new HostAllowlist(List.of()).isEmpty()).isTrue();
+        assertThat(new HostAllowlist(List.of("api.acme.com")).isEmpty()).isFalse();
     }
 
     @Test

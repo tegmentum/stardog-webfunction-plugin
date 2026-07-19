@@ -36,6 +36,16 @@ public class TestCapabilityVocabulary {
     }
 
     @Test
+    public void phase5PredicateIrisEndWithExpectedLocalNames() {
+        // Phase 5 additions — locked in so admin tooling can rely on the
+        // predicate IRI strings.
+        assertThat(CapabilityVocabulary.CAP_ALLOW_HTTP_PATH)
+                .isEqualTo(CapabilityVocabulary.NAMESPACE + "allowHttpPath");
+        assertThat(CapabilityVocabulary.CAP_ALLOW_WASM_CALLEE)
+                .isEqualTo(CapabilityVocabulary.NAMESPACE + "allowWasmCallee");
+    }
+
+    @Test
     public void interfaceIriFromWireNameRoundTrips() {
         assertThat(CapabilityVocabulary.interfaceIriFor("graph-callbacks"))
                 .isEqualTo(CapabilityVocabulary.IFACE_GRAPH_CALLBACKS);
