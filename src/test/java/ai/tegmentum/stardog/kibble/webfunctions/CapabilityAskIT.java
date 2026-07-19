@@ -6,8 +6,12 @@ import com.complexible.stardog.api.Connection;
 import com.complexible.stardog.api.ConnectionConfiguration;
 import com.complexible.stardog.api.admin.AdminConnection;
 import com.complexible.stardog.api.admin.AdminConnectionConfiguration;
+import com.stardog.stark.Literal;
+import com.stardog.stark.Value;
 import com.stardog.stark.query.SelectQueryResult;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -223,6 +227,55 @@ public class CapabilityAskIT {
         assertThat(rows).anyMatch(pv ->
                 CapabilityVocabulary.CAP_ASKS_RATIONALE.equals(pv[0])
                 && pv[1].contains("Integration-test ask for uppercase"));
+    }
+
+    // ---- I6 --------------------------------------------------------------
+
+    @Test
+    public void i6_diffQueryReturnsPendingReview() {
+        // Grant only cap:allowInterface cap:HttpCallbacks — no
+        // cap:allowHost triples. The uppercase ask carries
+        // cap:asksHost "api.example.com", so an admin diff query
+        // filtering "asked but not granted" on the host axis will
+        // surface that literal as pending review.
+        CapabilityPolicyDbHelpers.grantInterfaces(SERVER_URL, UPPERCASE_URL,
+                List.of(CapabilityVocabulary.IFACE_HTTP_CALLBACKS),
+                List.of());
+
+        invokeUpper();
+
+        // Admin diff query — "asked but not allowed" on the host axis.
+        // The ask carries cap:asksHost "api.example.com"; the grant
+        // carries no cap:allowHost — so the diff returns the ask'd host.
+        final String diff =
+                CapabilityPolicyDbHelpers.CAP_PREFIX
+                + "SELECT ?host WHERE {\n"
+                + "  GRAPH <" + CapabilityVocabulary.CAP_ASKS_NAMED_GRAPH + "> {\n"
+                + "    ?askDoc cap:asksHost ?host .\n"
+                + "    <" + UPPERCASE_URL + "> cap:hasAsk ?askDoc .\n"
+                + "  }\n"
+                + "  FILTER NOT EXISTS {\n"
+                + "    <" + UPPERCASE_URL + "> cap:allowHost ?host .\n"
+                + "  }\n"
+                + "}";
+        final List<String> pending = new ArrayList<>();
+        try (Connection conn = ConnectionConfiguration.to(
+                    CapabilityPolicyDbHelpers.POLICY_DB)
+                .server(SERVER_URL)
+                .credentials("admin", "admin")
+                .connect();
+             SelectQueryResult r = conn.select(diff).execute()) {
+            while (r.hasNext()) {
+                final Optional<Value> v = r.next().value("host");
+                v.ifPresent(val -> {
+                    if (val instanceof Literal l) pending.add(l.label());
+                    else pending.add(val.toString());
+                });
+            }
+        }
+        assertThat(pending)
+                .as("ask host should surface as pending review — asked but not granted")
+                .contains("api.example.com");
     }
 
     // ---- helpers ---------------------------------------------------------
