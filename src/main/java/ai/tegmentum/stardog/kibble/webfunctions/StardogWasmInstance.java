@@ -3,36 +3,21 @@ package ai.tegmentum.stardog.kibble.webfunctions;
 import com.complexible.common.rdf.model.ArrayLiteral;
 import com.complexible.stardog.StardogException;
 import com.complexible.stardog.index.dictionary.MappingDictionary;
-import com.complexible.stardog.index.statistics.Accuracy;
 import com.complexible.stardog.index.statistics.Cardinality;
-import com.complexible.stardog.plan.PlanException;
 import com.complexible.stardog.plan.filter.expr.ValueOrError;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Streams;
 import com.stardog.stark.Literal;
 import com.stardog.stark.Value;
-import com.stardog.stark.Values;
-import com.stardog.stark.query.Binding;
 import com.stardog.stark.query.BindingSet;
-import com.stardog.stark.query.BindingSets;
 import com.stardog.stark.query.SelectQueryResult;
 import com.stardog.stark.query.impl.SelectQueryResultImpl;
-import com.stardog.stark.query.io.QueryResultFormats;
-import com.stardog.stark.query.io.QueryResultParsers;
-import com.stardog.stark.query.io.QueryResultWriters;
 import ai.tegmentum.webassembly4j.api.Component;
 import ai.tegmentum.webassembly4j.api.ComponentInstance;
 import ai.tegmentum.webassembly4j.api.DefaultLinkingContext;
 import ai.tegmentum.webassembly4j.api.Engine;
-import ai.tegmentum.webassembly4j.api.Function;
-import ai.tegmentum.webassembly4j.api.HostFunction;
-import ai.tegmentum.webassembly4j.api.Instance;
-import ai.tegmentum.webassembly4j.api.Memory;
-import ai.tegmentum.webassembly4j.api.Module;
-import ai.tegmentum.webassembly4j.api.ValueType;
 import ai.tegmentum.webassembly4j.api.WebAssembly;
 import ai.tegmentum.webassembly4j.api.WitCallableResource;
 import ai.tegmentum.wasmtime4j.wit.WitList;
@@ -43,41 +28,25 @@ import ai.tegmentum.wasmtime4j.wit.WitValue;
 import com.complexible.stardog.security.ActionType;
 import com.complexible.stardog.security.ShiroUtils;
 import com.complexible.stardog.security.StardogAuthorizationException;
-import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.shiro.SecurityUtils;
 import org.apache.shiro.subject.Subject;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLConnection;
-import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.IntStream;
 
 import static com.stardog.stark.Values.iri;
 import static java.util.stream.Collectors.toList;
 
 public class StardogWasmInstance implements Closeable {
-
-    public static final String WASM_FUNCTION_MALLOC = "malloc";
-    public static final String WASM_FUNCTION_FREE = "free";
-    public static final String WASM_FUNCTION_MAPPING_DICTIONARY_GET = "mapping_dictionary_get";
-    public static final String WASM_FUNCTION_MAPPING_DICTIONARY_ADD = "mapping_dictionary_add";
-    public static final String WASM_FUNCTION_AGGREGATE = "aggregate";
-    public static final String WASM_FUNCTION_GET_VALUE = "get_value";
-    public static final String WASM_FUNCTION_EVALUATE = "evaluate";
-    public static final String WASM_FUNCTION_CARDINALITY_ESTIMATE = "cardinality_estimate";
-    public static final String WASM_FUNCTION_DOC = "doc";
 
     // Component-mode export paths for the base tegmentum:webfunction@0.1.0
     // world's sparql-extension surface. wasmtime4j surfaces interface exports
@@ -92,8 +61,6 @@ public class StardogWasmInstance implements Closeable {
     static final String AGG_STATE_STEP            = "tegmentum:webfunction/aggregate@0.1.0#[method]aggregate-state.step";
     static final String AGG_STATE_FINISH          = "tegmentum:webfunction/aggregate@0.1.0#[method]aggregate-state.finish";
 
-    public static final long WASM_PAGE_SIZE = 64 * FileUtils.ONE_KB;
-
     static LoadingCache<URL, byte[]> loadingCache = CacheBuilder
             .newBuilder()
             .softValues()
@@ -104,14 +71,12 @@ public class StardogWasmInstance implements Closeable {
                 }
             });
 
-    // Component-mode caches: one shared Engine built lazily on first component
-    // call (WebFunctionConfig properties are frozen at that point); one
-    // Component per URL, so repeat wf:call invocations skip download + compile
-    // and only pay instantiation cost. Module-mode still uses per-call Engine
-    // + Module because its linking context binds a per-instance MappingDictionary
-    // reference and the current wiring is easier to reason about that way.
-    private static volatile Engine COMPONENT_MODE_SHARED_ENGINE;
-    private static final Object COMPONENT_MODE_ENGINE_LOCK = new Object();
+    // Shared cache: one Engine built lazily on first call (WebFunctionConfig
+    // properties are frozen at that point); one Component per URL, so repeat
+    // wf:call invocations skip download + compile and only pay instantiation
+    // cost.
+    private static volatile Engine SHARED_ENGINE;
+    private static final Object SHARED_ENGINE_LOCK = new Object();
     private static final java.util.concurrent.ConcurrentHashMap<URL, Component> COMPONENT_CACHE =
             new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -129,21 +94,17 @@ public class StardogWasmInstance implements Closeable {
         }
     }
 
-    private Engine engine;
-    private Module module;
-    private Component component;
-
     private final AtomicReference<MappingDictionary> mappingDictionaryRef = new AtomicReference<>();
-    private Instance instance;
+    private ComponentInstance instance;
     private boolean closed = false;
     private boolean mappingDictionaryIsSet;
 
-    // Component-mode dispatch state. The base sparql-extension world routes
-    // every filter call through `extension.call(name, args)` — the name is
-    // discovered once via `extension.register()` and cached for this
-    // instance's lifetime. Aggregate lifecycle is: `new-aggregate(name)`
-    // returns a per-group resource handle, `step` accumulates, `finish`
-    // returns the value; the resource is dropped when this instance closes.
+    // Dispatch state. The base sparql-extension world routes every filter
+    // call through `extension.call(name, args)` — the name is discovered
+    // once via `extension.register()` and cached for this instance's
+    // lifetime. Aggregate lifecycle is: `new-aggregate(name)` returns a
+    // per-group resource handle, `step` accumulates, `finish` returns the
+    // value; the resource is dropped when this instance closes.
     private volatile String cachedFilterFunctionName;
     private volatile String cachedAggregateName;
     private WitCallableResource aggregateResource;
@@ -162,49 +123,6 @@ public class StardogWasmInstance implements Closeable {
         } else {
             return new URL(value.toString() + '/' + Version.PLUGIN_VERSION);
         }
-    }
-
-    public static class WasmMemoryRef {
-        public int addr;
-        public int len;
-        //TODO not sure if these should be int or long
-
-        public static WasmMemoryRef from(final int addr, final int len) {
-            return new WasmMemoryRef(addr, len);
-        }
-
-        public WasmMemoryRef(final int addr, final int len) {
-            this.addr = addr;
-            this.len = len;
-        }
-    }
-
-    private HostFunction mappingDictionaryGetHostFunction() {
-        return (Object... args) -> {
-            final long id = ((Number) args[0]).longValue();
-            final Value value = mappingDictionaryRef.get().getValue(id);
-
-            WasmMemoryRef buf = null;
-            //TODO fix this. possible NPE
-            try {
-                buf = writeToWasmMemory("memory", new Value[]{value});
-            } catch (IOException e) {
-                //TODO ???
-            }
-
-            return new Object[]{buf.addr};
-        };
-    }
-
-    private HostFunction mappingDictionaryAddHostFunction() {
-        return (Object... args) -> {
-            final int addr = ((Number) args[0]).intValue();
-            final long result = Arrays.stream(readFromWasmMemory("memory", addr))
-                    .map(mappingDictionaryRef.get()::add)
-                    .findFirst()
-                    .orElse(-1L);
-            return new Object[]{result};
-        };
     }
 
     public static StardogWasmInstance from(final Value wasmURL) throws ExecutionException, MalformedURLException {
@@ -256,14 +174,11 @@ public class StardogWasmInstance implements Closeable {
     }
 
     public StardogWasmInstance(final URL wasmUrl) throws ExecutionException {
-        // Reuse the shared engine + cached component; do NOT hold the engine
-        // in `this.engine` since we don't want close() to release the shared
-        // resources. The instance is per-call.
-        this.component = null;
-        this.engine = null;
+        // Reuse the shared engine + cached component; the per-call
+        // ComponentInstance is the only resource owned by this instance.
         final Component cached;
         try {
-            cached = componentModeComponentFor(wasmUrl);
+            cached = cachedComponentFor(wasmUrl);
         } catch (IOException ioe) {
             throw new RuntimeException(ioe);
         }
@@ -367,7 +282,7 @@ public class StardogWasmInstance implements Closeable {
                 "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm-service",
                 HostCallbacks.invokeWasmService());
         }
-        this.instance = cached.instantiate(
+        this.instance = (ComponentInstance) cached.instantiate(
                 componentLinker.build(),
                 WebFunctionConfig.componentConfigFromSystemProperties());
     }
@@ -452,11 +367,11 @@ public class StardogWasmInstance implements Closeable {
         if (ctx != null) ctx.setAsk(ask);
     }
 
-    private static Engine componentModeSharedEngine() {
-        Engine e = COMPONENT_MODE_SHARED_ENGINE;
+    private static Engine sharedEngine() {
+        Engine e = SHARED_ENGINE;
         if (e != null) return e;
-        synchronized (COMPONENT_MODE_ENGINE_LOCK) {
-            if (COMPONENT_MODE_SHARED_ENGINE == null) {
+        synchronized (SHARED_ENGINE_LOCK) {
+            if (SHARED_ENGINE == null) {
                 final ai.tegmentum.webassembly4j.api.WebAssemblyBuilder engineBuilder =
                         WebAssembly.builder()
                                 .provider(WebFunctionConfig.engineProvider())
@@ -469,62 +384,20 @@ public class StardogWasmInstance implements Closeable {
                             "webfunction plugin requires component-model support; engine '"
                                     + built.info().engineId() + "' does not support components");
                 }
-                COMPONENT_MODE_SHARED_ENGINE = built;
+                SHARED_ENGINE = built;
             }
-            return COMPONENT_MODE_SHARED_ENGINE;
+            return SHARED_ENGINE;
         }
     }
 
-    private static Component componentModeComponentFor(final URL wasmUrl) throws IOException, ExecutionException {
+    private static Component cachedComponentFor(final URL wasmUrl) throws IOException, ExecutionException {
         Component cached = COMPONENT_CACHE.get(wasmUrl);
         if (cached != null) return cached;
-        final Engine engine = componentModeSharedEngine();
+        final Engine engine = sharedEngine();
         final byte[] bytes = loadingCache.get(wasmUrl);
         // computeIfAbsent — engine.loadComponent doesn't throw checked IOException
         // so the lambda stays clean.
         return COMPONENT_CACHE.computeIfAbsent(wasmUrl, u -> engine.loadComponent(bytes));
-    }
-
-    private Value[] readFromWasmMemory(final String name, final int output_pointer) {
-        final Memory memory = instance.memory(name).get();
-        try (final SelectQueryResult selectQueryResult = QueryResultParsers.readSelect(new ByteArrayInputStream(readResult(memory, output_pointer).toByteArray()), QueryResultFormats.JSON)) {
-            final Optional<BindingSet> bs = selectQueryResult.stream().findFirst();
-
-            if (bs.isPresent()) {
-                return bs.get().stream().map(Binding::value).toArray(Value[]::new);
-            } else {
-                return new Value[0];
-            }
-        } catch (IOException e) {
-            return new Value[0];
-        }
-    }
-
-    private WasmMemoryRef writeToWasmMemory(final String name, final Value[] values) throws IOException {
-
-        final List<String> vars = Lists.newArrayListWithCapacity(values.length);
-        final BindingSets.Builder bindingSetsBuilder = BindingSets.builder();
-        IntStream.range(0, values.length).forEach(i -> {
-            vars.add(String.format("value_%d", i));
-            bindingSetsBuilder.add(String.format("value_%d", i), values[i]);
-        });
-        final List<BindingSet> bindings = Collections.singletonList(bindingSetsBuilder.build());
-
-        final SelectQueryResult queryResult = new SelectQueryResultImpl(vars, bindings);
-        final ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-
-        QueryResultWriters.write(queryResult, byteArrayOutputStream, QueryResultFormats.JSON);
-
-        final Function mallocFunction = instance.function(WASM_FUNCTION_MALLOC).get();
-        byteArrayOutputStream.write('\0');
-        final int inputLength = byteArrayOutputStream.toByteArray().length;
-        mallocFunction.invoke(inputLength);
-        final Integer input_pointer = ((Number) mallocFunction.invoke(inputLength)).intValue();
-
-        final Memory memory = instance.memory(name).get();
-        final byte[] input = byteArrayOutputStream.toByteArray();
-        memory.write(input_pointer, input);
-        return WasmMemoryRef.from(input_pointer, byteArrayOutputStream.toByteArray().length);
     }
 
     public void setMappingDictionary(final MappingDictionary mappingDictionary) {
@@ -532,92 +405,18 @@ public class StardogWasmInstance implements Closeable {
         this.mappingDictionaryRef.set(mappingDictionary);
     }
 
-    private WasmMemoryRef writeToWasmMemoryWithCardinality(final String name, final Cardinality cardinality, final Value[] values) throws IOException {
-
-        final List<String> vars = Lists.newArrayListWithCapacity(values.length);
-        final BindingSets.Builder bindingSetsBuilder = BindingSets.builder();
-        IntStream.range(0, values.length).forEach(i -> {
-            vars.add(String.format("value_%d", i));
-            bindingSetsBuilder.add(String.format("value_%d", i), values[i]);
-        });
-        vars.add("cardinality");
-        bindingSetsBuilder.add("cardinality", Values.literal(cardinality.value()));
-        final List<BindingSet> bindings = Collections.singletonList(bindingSetsBuilder.build());
-
-        final SelectQueryResult queryResult = new SelectQueryResultImpl(vars, bindings);
-        final ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-
-        QueryResultWriters.write(queryResult, byteArrayOutputStream, QueryResultFormats.JSON);
-
-        final Function mallocFunction = instance.function(WASM_FUNCTION_MALLOC).get();
-        byteArrayOutputStream.write('\0');
-        final int inputLength = byteArrayOutputStream.toByteArray().length;
-        mallocFunction.invoke(inputLength);
-        final Integer input_pointer = ((Number) mallocFunction.invoke(inputLength)).intValue();
-
-        final Memory memory = instance.memory(name).get();
-        final byte[] input = byteArrayOutputStream.toByteArray();
-        memory.write(input_pointer, input);
-        return WasmMemoryRef.from(input_pointer, byteArrayOutputStream.toByteArray().length);
-    }
-
-
-    private WasmMemoryRef writeToWasmMemoryWithMultiplicity(final String name, final Value[] values, final long multiplicity) throws IOException {
-
-        final List<String> vars = Lists.newArrayListWithCapacity(values.length);
-        final BindingSets.Builder bindingSetsBuilder = BindingSets.builder();
-        IntStream.range(0, values.length).forEach(i -> {
-            vars.add(String.format("value_%d", i));
-            bindingSetsBuilder.add(String.format("value_%d", i), values[i]);
-        });
-        vars.add("multiplicity");
-        bindingSetsBuilder.add("multiplicity", Values.literal(multiplicity));
-        final List<BindingSet> bindings = Collections.singletonList(bindingSetsBuilder.build());
-
-        final SelectQueryResult queryResult = new SelectQueryResultImpl(vars, bindings);
-        final ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-
-        QueryResultWriters.write(queryResult, byteArrayOutputStream, QueryResultFormats.JSON);
-
-        final Function mallocFunction = instance.function(WASM_FUNCTION_MALLOC).get();
-        byteArrayOutputStream.write('\0');
-        final int inputLength = byteArrayOutputStream.toByteArray().length;
-        mallocFunction.invoke(inputLength);
-        final Integer input_pointer = ((Number) mallocFunction.invoke(inputLength)).intValue();
-
-        final Memory memory = instance.memory(name).get();
-        final byte[] input = byteArrayOutputStream.toByteArray();
-        memory.write(input_pointer, input);
-        return WasmMemoryRef.from(input_pointer, byteArrayOutputStream.toByteArray().length);
-    }
-
-    private SelectQueryResult readFromWasmMemorySelectQueryResult(final String name, final int output_pointer) {
-        final Memory memory = instance.memory(name).get();
-        try {
-            return QueryResultParsers.readSelect(new ByteArrayInputStream(readResult(memory, output_pointer).toByteArray()), QueryResultFormats.JSON);
-        } catch (IOException e) {
-            throw new StardogException(e);
-        }
-    }
-
-    public void free(final WasmMemoryRef wasmMemoryRef) {
-        final Function freeFunction = instance.function(WASM_FUNCTION_FREE).get();
-        freeFunction.invoke(wasmMemoryRef.addr, wasmMemoryRef.len);
-    }
-
     public boolean isClosed() {
         return closed;
     }
 
     public void close() {
-        // In component mode the shared engine + cached component are not held
-        // on this instance (they live in the static cache), so nothing to
-        // release beyond the per-call ComponentInstance. Module mode still
-        // owns its engine + module.
+        // The shared engine + cached component are not held on this
+        // instance (they live in the static cache), so nothing to
+        // release beyond the per-call ComponentInstance.
         //
-        // Drop any live aggregate resource FIRST — the underlying store-side
-        // handle it owns lives inside `instance`, so releasing after we null
-        // `instance` would leak the handle.
+        // Drop any live aggregate resource FIRST — the underlying
+        // store-side handle it owns lives inside `instance`, so
+        // releasing after we null `instance` would leak the handle.
         if (aggregateResource != null) {
             try {
                 aggregateResource.close();
@@ -627,19 +426,7 @@ public class StardogWasmInstance implements Closeable {
             }
             aggregateResource = null;
         }
-        if (module != null) {
-            module.close();
-        }
-        if (component != null) {
-            component.close();
-        }
-        if (engine != null) {
-            engine.close();
-        }
         instance = null;
-        module = null;
-        component = null;
-        engine = null;
         closed = true;
     }
 
@@ -684,17 +471,12 @@ public class StardogWasmInstance implements Closeable {
      * (and {@link CallbackContext#fuelConsumed()}) can debit / read the
      * real store fuel through the wasmtime4j 1.4.7 / webassembly4j 2.4.3
      * API. No-op when there is no bound CallbackContext (embedded/test
-     * callers that dispatch without binding a callback context) or when
-     * {@code instance} is not a {@link ComponentInstance} (module-mode
-     * dispatch reaches this only via {@link #stampComponentInstanceOnCurrentContext()}
-     * called from the component-mode branch, so the cast is safe there).
+     * callers that dispatch without binding a callback context).
      */
     private void stampComponentInstanceOnCurrentContext() {
         final CallbackContext ctx = CallbackContext.current();
         if (ctx == null) return;
-        if (instance instanceof ComponentInstance) {
-            ctx.setComponentInstance((ComponentInstance) instance);
-        }
+        ctx.setComponentInstance(instance);
     }
 
     private WitValueMarshaller marshaller() {
@@ -714,7 +496,7 @@ public class StardogWasmInstance implements Closeable {
     private SelectQueryResult componentExtensionCall(final Value[] values) throws IOException {
         final WitValueMarshaller m = marshaller();
         final String fnName = ensureFilterFunctionName();
-        final WitValue result = (WitValue) ((ComponentInstance) instance).invokeWit(
+        final WitValue result = (WitValue) instance.invokeWit(
                 EXT_CALL,
                 WitValueMarshaller.witString(fnName),
                 m.toWitArgs(values));
@@ -741,7 +523,7 @@ public class StardogWasmInstance implements Closeable {
         if (name != null) return name;
         synchronized (this) {
             if (cachedFilterFunctionName == null) {
-                final WitValue descriptors = (WitValue) ((ComponentInstance) instance).invokeWit(EXT_REGISTER);
+                final WitValue descriptors = (WitValue) instance.invokeWit(EXT_REGISTER);
                 cachedFilterFunctionName = firstDescriptorName(descriptors, "register",
                         "component exports no filter functions; extension.register returned []");
             }
@@ -770,13 +552,12 @@ public class StardogWasmInstance implements Closeable {
     }
 
     private void openAggregateResource() throws IOException {
-        final ComponentInstance ci = (ComponentInstance) instance;
         if (cachedAggregateName == null) {
-            final WitValue descriptors = (WitValue) ci.invokeWit(AGG_REGISTER_AGGREGATES);
+            final WitValue descriptors = (WitValue) instance.invokeWit(AGG_REGISTER_AGGREGATES);
             cachedAggregateName = firstDescriptorName(descriptors, "register-aggregates",
                     "component exports no aggregates; aggregate.register-aggregates returned []");
         }
-        final WitValue newAggReturn = (WitValue) ci.invokeWit(
+        final WitValue newAggReturn = (WitValue) instance.invokeWit(
                 AGG_NEW_AGGREGATE, WitValueMarshaller.witString(cachedAggregateName));
         final WitValue okResource;
         try {
@@ -788,7 +569,7 @@ public class StardogWasmInstance implements Closeable {
         // asCallableResource binds the WitResource returned by new-aggregate to
         // this ComponentInstance, so downstream `step`/`finish` calls dispatch
         // through the receiver without manual argument prepending.
-        aggregateResource = ci.asCallableResource(okResource);
+        aggregateResource = instance.asCallableResource(okResource);
     }
 
     /**
@@ -798,8 +579,8 @@ public class StardogWasmInstance implements Closeable {
      */
     private SelectQueryResult componentAggregateFinish() {
         if (aggregateResource == null) {
-            // No step ever ran — return empty, matching the module-mode contract
-            // for aggregate-with-no-inputs.
+            // No step ever ran — return an empty result for the
+            // aggregate-with-no-inputs case.
             return new SelectQueryResultImpl(java.util.Collections.emptyList(), java.util.Collections.emptyList());
         }
         try {
@@ -859,23 +640,6 @@ public class StardogWasmInstance implements Closeable {
             throw new RuntimeException(t);
         }
         return wr.getOk().orElse(null);
-    }
-
-    private ByteArrayOutputStream readResult(final Memory memory, final Integer output_pointer) {
-        final ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        final ByteBuffer memoryBuffer = memory.asByteBuffer();
-
-        for (Integer i = output_pointer, max = memoryBuffer.limit(); i < max; ++i) {
-            final byte[] b = new byte[1];
-            memoryBuffer.position(i);
-            memoryBuffer.get(b);
-
-            if (b[0] == 0) {
-                break;
-            }
-            baos.write(b[0]);
-        }
-        return baos;
     }
 
     public ValueOrError selectQueryResultToValueOrError(final SelectQueryResult selectQueryResult) {
