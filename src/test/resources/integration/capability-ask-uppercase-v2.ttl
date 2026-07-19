@@ -1,0 +1,20 @@
+# Capability-ask v2 for the uppercase reference extension. Used
+# by CapabilityAskIT's overwrite-on-reload sub-phase (I8): the
+# fixture wasm on disk is swapped from the v1-embedded artifact
+# to the v2-embedded artifact, the plugin's byte cache is
+# invalidated via wf:cacheClear, and a second wf:call is expected
+# to trigger recordAsk with these v2 triples — DELETEing the v1
+# triples and INSERTing these.
+#
+# The v2 predicate set intentionally differs from v1 across
+# every axis so the assertion after the reload distinguishes v1
+# leftovers from v2 landings.
+
+@prefix cap: <http://semantalytics.com/2021/03/ns/stardog/webfunction/capability#> .
+
+<> a cap:CapabilityAsk ;
+    cap:asksInterface cap:GraphCallbacks ;
+    cap:asksMethod cap:GraphCallbacks_ExecuteQuery ;
+    cap:asksHost "api.v2.example.com" ;
+    cap:asksHttpPath "api.v2.example.com/read/" ;
+    cap:asksRationale "Integration-test ask v2: overwrite-on-reload target — every axis differs from v1." .

@@ -1,0 +1,18 @@
+# Capability-ask for the uppercase reference extension.
+#
+# Embedded into example_uppercase_extension.wasm's
+# `stardog.capability-ask` custom section by `wf-embed-ask embed`
+# to produce example_uppercase_extension_with_ask.wasm. Used by
+# CapabilityAskIT to prove the auto-insertion + overwrite-on-
+# reload flows end-to-end.
+#
+# The uppercase extension imports no host callbacks; the ask
+# lists http-callbacks and a rationale so the SPARQL round-trip
+# has real triples to fetch back.
+
+@prefix cap: <http://semantalytics.com/2021/03/ns/stardog/webfunction/capability#> .
+
+<> a cap:CapabilityAsk ;
+    cap:asksInterface cap:HttpCallbacks ;
+    cap:asksHost "api.example.com" ;
+    cap:asksRationale "Integration-test ask for uppercase extension: no callbacks required, HTTP host declared for cross-axis coverage." .

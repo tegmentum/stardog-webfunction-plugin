@@ -29,10 +29,18 @@ public final class StardogContainer extends GenericContainer<StardogContainer> {
         this(DEFAULT_IMAGE);
     }
 
+    /**
+     * Accumulator for JVM args appended to {@code STARDOG_SERVER_JAVA_ARGS}.
+     * Kept as an explicit builder so callers can layer
+     * {@link #withSystemProperty(String, String)} on top of the base
+     * {@code -Xmx1g} without a manual withEnv() replacement.
+     */
+    private final StringBuilder javaArgs = new StringBuilder("-Xmx1g");
+
     public StardogContainer(final String image) {
         super(image);
         addExposedPort(STARDOG_PORT);
-        withEnv("STARDOG_SERVER_JAVA_ARGS", "-Xmx1g");
+        withEnv("STARDOG_SERVER_JAVA_ARGS", javaArgs.toString());
         // Stardog scans STARDOG_EXT for third-party jars at server start —
         // point it at the .ext directory withPluginJar() mounts into. Without
         // this the plugin is on disk but nothing adds it to the JVM classpath
@@ -67,6 +75,22 @@ public final class StardogContainer extends GenericContainer<StardogContainer> {
 
     public StardogContainer withLicenseFromEnv() {
         return withLicense(System.getenv("STARDOG_LICENSE_PATH"));
+    }
+
+    /**
+     * Append a {@code -Dkey=value} JVM arg to the Stardog server's
+     * startup so plugin-side {@code WebFunctionConfig.*} system properties
+     * take effect inside the container. Chain-friendly; must be called
+     * before {@link #start()}.
+     *
+     * <p>Values containing spaces are not supported — Stardog splits
+     * {@code STARDOG_SERVER_JAVA_ARGS} on whitespace at start. Escape at
+     * the caller if needed.
+     */
+    public StardogContainer withSystemProperty(final String key, final String value) {
+        javaArgs.append(" -D").append(key).append('=').append(value);
+        withEnv("STARDOG_SERVER_JAVA_ARGS", javaArgs.toString());
+        return this;
     }
 
     /**

@@ -1,0 +1,19 @@
+# Capability-ask for example_graph_callback_extension.wasm — but
+# INTENTIONALLY UNDERSTATED. The extension imports and invokes
+# tegmentum:webfunction/graph-callbacks@0.1.0#execute-query at
+# runtime, but this ask declares only http-callbacks. That
+# mismatch is the point: the warn-on-undeclared diagnostic in
+# HostCallbacks lands a GRANTED_UNDECLARED audit row when the
+# runtime dispatch does not appear in the extension's ask
+# (capability-ask.md §8).
+#
+# CapabilityAskIT's I7 sub-phase grants graph-callbacks in the
+# policy triples so the invocation actually proceeds, then reads
+# the on-disk audit log to prove the GRANTED_UNDECLARED row was
+# written.
+
+@prefix cap: <http://semantalytics.com/2021/03/ns/stardog/webfunction/capability#> .
+
+<> a cap:CapabilityAsk ;
+    cap:asksInterface cap:HttpCallbacks ;
+    cap:asksRationale "Integration-test ask: deliberately understates — invokes graph-callbacks at runtime but only declares http-callbacks so the warn-on-undeclared diagnostic fires." .
