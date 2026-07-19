@@ -83,6 +83,22 @@ public final class CallbackContext {
     // never binds one (isolated unit-test dispatch).
     private CapabilityGrant   capabilityGrant;
 
+    // Capability-policy Phase 4 — invoker's Shiro subject, captured at
+    // extension instantiation time and used by {@link HostCallbacks} to
+    // wrap Stardog operations in {@code ShiroUtils.executeAs(subject, ...)}
+    // so Stardog's own permission checks (graph ACLs, database ACLs,
+    // named-graph permissions) fire for the invoker's identity rather
+    // than the plugin's ambient credential. Explicit capture is more
+    // defensive than an implicit ThreadLocal read: it protects against
+    // subject rebinding between instantiation and dispatch, and follows
+    // the invoker across any child threads a Stardog operation may
+    // spawn. Null when capability enforcement is disabled or when the
+    // invocation reached this context anonymously (Shiro reports no
+    // authenticated subject); the Phase 4 wrap in {@link HostCallbacks}
+    // consults {@code webfunctions.capability.anonymous-policy} to
+    // decide the fallback.
+    private org.apache.shiro.subject.Subject invokerSubject;
+
     // v0.3.2 prepared-query handles. The Stardog QueryFactory produces a
     // ReadQuery bound to a specific connection + monitor; we re-parse per
     // call today, but Stardog's kernel-level plan cache short-circuits the
@@ -106,6 +122,7 @@ public final class CallbackContext {
         this.tollHostCallbackToll = 0L;
         this.componentInstance = null;
         this.capabilityGrant = null;
+        this.invokerSubject = null;
     }
 
     /**
@@ -141,6 +158,32 @@ public final class CallbackContext {
      */
     public Optional<CapabilityGrant> capabilityGrant() {
         return Optional.ofNullable(capabilityGrant);
+    }
+
+    /**
+     * Stamp the invoker's Shiro subject onto this context. Called by
+     * {@link StardogWasmInstance} at instantiation time — right after
+     * the {@code ShiroUtils.require} instantiation gate — so
+     * {@link HostCallbacks} can later wrap every Stardog operation in
+     * {@code ShiroUtils.executeAs(subject, () -> ...)}. Null is a
+     * valid state (capability enforcement disabled, or the invoker is
+     * anonymous — Shiro reports no authenticated subject).
+     */
+    public void setInvokerSubject(final org.apache.shiro.subject.Subject subject) {
+        this.invokerSubject = subject;
+    }
+
+    /**
+     * The invoker's Shiro subject captured at instantiation, or empty
+     * when capability enforcement is disabled or the invoker was
+     * anonymous. {@link HostCallbacks} passes the value into
+     * {@code ShiroUtils.executeAs(...)} so Stardog's per-user permission
+     * checks (graph ACLs, database ACLs, named-graph permissions) fire
+     * for the invoker's identity rather than the plugin's ambient
+     * credential.
+     */
+    public Optional<org.apache.shiro.subject.Subject> invokerSubject() {
+        return Optional.ofNullable(invokerSubject);
     }
 
     /**
