@@ -50,6 +50,18 @@ public final class WebFunctionConfig {
     public static final long DEFAULT_FUEL_PER_INVOCATION_MAX  = 100_000L;
     public static final long DEFAULT_FUEL_HOST_CALLBACK_TOLL  = 1_000L;
 
+    // Fuel metering Phase 2 — per-user commercial quota + state store.
+    // All keys optional; defaults keep Phase 1 behavior when Phase 2 opt-in
+    // config isn't set (per-user.monthly=0 short-circuits the quota check
+    // entirely).
+    public static final String PROP_FUEL_PER_USER_MONTHLY       = "webfunctions.fuel.per-user.monthly";
+    public static final String PROP_FUEL_STATE_FLUSH_INTERVAL   = "webfunctions.fuel.state-store.flush-interval";
+    public static final String PROP_FUEL_STATE_DATABASE_NAME    = "webfunctions.fuel.state-store.database-name";
+
+    public static final long   DEFAULT_FUEL_PER_USER_MONTHLY     = 0L;        // unlimited
+    public static final long   DEFAULT_FUEL_STATE_FLUSH_INTERVAL = 60_000L;   // 60s — mirrors QueryLog UPDATE_INTERVAL
+    public static final String DEFAULT_FUEL_STATE_DATABASE_NAME  = "system-webfunctions-fuel";
+
     public enum EngineMode { MODULE, COMPONENT }
 
     private WebFunctionConfig() {}
@@ -204,6 +216,38 @@ public final class WebFunctionConfig {
      */
     public static long fuelHostCallbackToll() {
         return getLong(PROP_FUEL_HOST_CALLBACK_TOLL).orElse(DEFAULT_FUEL_HOST_CALLBACK_TOLL);
+    }
+
+    /**
+     * Per-user monthly commercial quota in fuel units.
+     *
+     * <p>Default 0 (unlimited) — Phase-2 opt-in. When {@link #fuelEnabled()}
+     * is true AND this value is {@code > 0}, the invocation entry point
+     * loads the caller's {@link UserFuelState}, checks the monthly cap,
+     * and post-invocation increments the running counter through the
+     * configured {@link FuelStateStore}. See {@code fuel-implementation.md}
+     * §4 steps 3-6 and §8 Phase 2.
+     */
+    public static long fuelPerUserMonthly() {
+        return getLong(PROP_FUEL_PER_USER_MONTHLY).orElse(DEFAULT_FUEL_PER_USER_MONTHLY);
+    }
+
+    /**
+     * Flush interval in milliseconds for the write-behind cache in
+     * {@link KernelBackedFuelStateStore}. Default 60_000 ms — mirrors the
+     * QueryLog {@code UPDATE_INTERVAL} shape (see §7a.2 ecosystem precedent).
+     */
+    public static long fuelStateFlushIntervalMillis() {
+        return getLong(PROP_FUEL_STATE_FLUSH_INTERVAL).orElse(DEFAULT_FUEL_STATE_FLUSH_INTERVAL);
+    }
+
+    /**
+     * Name of the Stardog-managed database that persists fuel state; see
+     * §7a.4 recommendation. Default {@code system-webfunctions-fuel}.
+     */
+    public static String fuelStateDatabaseName() {
+        final String raw = System.getProperty(PROP_FUEL_STATE_DATABASE_NAME);
+        return raw == null || raw.isEmpty() ? DEFAULT_FUEL_STATE_DATABASE_NAME : raw.trim();
     }
 
     private static OptionalLong getLong(final String key) {
