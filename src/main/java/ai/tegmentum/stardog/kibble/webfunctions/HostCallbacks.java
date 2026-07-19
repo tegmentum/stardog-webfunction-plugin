@@ -843,43 +843,439 @@ public final class HostCallbacks {
      *  func(component-uri: string, function-name: string, args: list<term>)
      *   -> result<term, wasm-call-error>}.
      *
-     * <p>MVP: returns {@code wasm-call-error::not-permitted} with a descriptive
-     * message. Full sub-component composition on the JVM host is separate
-     * future work — the WIT surface is wired so guests importing this
-     * interface can link, but the actual dispatch table isn't populated yet.
+     * <p>Loads the callee wasm component identified by
+     * {@code component-uri} through the shared plugin caches
+     * ({@link CalleeComponentLoader}), marshals the caller's
+     * {@code list<term>} args into Stardog {@link Value}s, dispatches
+     * into the callee's default {@code extension.call} export via
+     * {@link StardogWasmInstance#evaluate}, and encodes the resulting
+     * single-row {@code SelectQueryResult} as a single {@code term}.
+     *
+     * <p>MVP limitation: the {@code function-name} argument is preserved
+     * on the wire but not consulted by dispatch — the base sparql-extension
+     * world auto-discovers a single filter function via register(). A
+     * future revision will thread function-name through
+     * {@link StardogWasmInstance#evaluate}.
+     *
+     * <p>Single-level nesting rule: rejects a call when the current
+     * frame is already inside a wasm-callbacks dispatch. See
+     * {@link #invokeWasmService} for the full error-mapping table.
      */
     public static WitHostFunction invokeWasmV1() {
-        return args -> {
-            final CallbackContext ctx = CallbackContext.current();
-            final String wasmUri = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
-            enforceCapability(ctx, "wasm-callbacks", "invoke-wasm", wasmUri);
-            enforceWasmCalleeCapability(ctx, "invoke-wasm", wasmUri);
-            if (ctx != null) ctx.chargeToll("wasm-callbacks.invoke-wasm");
-            return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
-                "invoke-wasm: not implemented on JVM host (MVP stub — full sub-component "
-                + "dispatch is future work)")) };
-        };
+        return args -> invokeWasmDispatch(
+                args,
+                /* interfaceMethod */ "invoke-wasm",
+                /* returnShape    */ CalleeReturnShape.SINGLE_TERM,
+                /* invoker        */ CalleeComponentLoader::load);
     }
 
     /**
      * Base-substrate {@code tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm-service:
      *  func(url: string, args: list<term>) -> result<list<binding>, wasm-call-error>}.
      *
-     * <p>Property-function-shape counterpart to {@link #invokeWasmV1}. MVP is
-     * a {@code not-permitted} stub for the same reason: full JVM-host
-     * component composition is separate future work.
+     * <p>Property-function-shape counterpart to {@link #invokeWasmV1}. Loads
+     * the callee wasm component identified by {@code url} through the
+     * shared plugin caches ({@link CalleeComponentLoader}), marshals the
+     * caller's {@code list<term>} args into Stardog {@link Value}s,
+     * dispatches into the callee's default {@code extension.call}
+     * export via {@link StardogWasmInstance#evaluate}, and encodes the
+     * resulting single-row {@code SelectQueryResult} as a
+     * {@code list<binding>} return.
+     *
+     * <p>Single-level nesting rule: rejects a call when the current
+     * frame is already inside a wasm-callbacks dispatch
+     * ({@link CallbackContext#wasmCallDepth} {@code >= 1}) with a
+     * {@code not-permitted} arm — the closest existing wasm-call-error
+     * variant per host-callbacks.wit ({@code not-found} /
+     * {@code invocation-error} / {@code not-permitted}); an explicit
+     * {@code nesting-not-permitted} arm would need a WIT change and
+     * host-callbacks.wit is out of scope for this task.
      */
     public static WitHostFunction invokeWasmService() {
-        return args -> {
-            final CallbackContext ctx = CallbackContext.current();
-            final String wasmSvcUri = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
-            enforceCapability(ctx, "wasm-callbacks", "invoke-wasm-service", wasmSvcUri);
-            enforceWasmCalleeCapability(ctx, "invoke-wasm-service", wasmSvcUri);
-            if (ctx != null) ctx.chargeToll("wasm-callbacks.invoke-wasm-service");
+        return args -> invokeWasmDispatch(
+                args,
+                /* interfaceMethod */ "invoke-wasm-service",
+                /* returnShape    */ CalleeReturnShape.LIST_OF_BINDING,
+                /* invoker        */ CalleeComponentLoader::load);
+    }
+
+    /**
+     * Callee-return shape selector for the shared
+     * {@link #invokeWasmDispatch} helper. {@code invoke-wasm} returns
+     * {@code result<term, wasm-call-error>}; {@code invoke-wasm-service}
+     * returns {@code result<list<binding>, wasm-call-error>}. Both wrap
+     * the same underlying dispatch — the difference is only in how the
+     * callee's {@link com.stardog.stark.query.SelectQueryResult} is
+     * encoded on the way out.
+     */
+    enum CalleeReturnShape {
+        /** invoke-wasm — single {@code term}. */
+        SINGLE_TERM,
+        /** invoke-wasm-service — {@code list<binding>}. */
+        LIST_OF_BINDING
+    }
+
+    /**
+     * Callee load strategy — package-private and injectable so unit
+     * tests can drive the dispatch (nesting, capability, error mapping,
+     * fuel-reflection) without wiring a real wasm engine.
+     */
+    @FunctionalInterface
+    interface CalleeInvoker {
+        StardogWasmInstance load(String url,
+                                 com.complexible.stardog.index.dictionary.MappingDictionary dict)
+                throws java.net.MalformedURLException, java.util.concurrent.ExecutionException;
+    }
+
+    /**
+     * Shared dispatch body for {@link #invokeWasmService} and
+     * {@link #invokeWasmV1}. Package-private for test injection of the
+     * {@link CalleeInvoker} strategy.
+     *
+     * <p>Flow:
+     * <ol>
+     *   <li>Config gate + context binding checks — no-context / no-dict
+     *       branches return typed wasm-call-errors so a guest can distinguish
+     *       "wasm-callbacks not usable in this frame" from "callee failed".</li>
+     *   <li>Capability enforcement — declarative check + fine-grained callee
+     *       allowlist. These duplicate what the host function factories run
+     *       for the real dispatch path; the tests drive this method directly
+     *       and rely on the checks here to fire.</li>
+     *   <li>Nesting-depth guard — {@code ctx.wasmCallDepth() >= 1} means the
+     *       caller is a callee itself; MVP rejects. Uses the {@code not-permitted}
+     *       arm since host-callbacks.wit lacks a nesting-specific variant.</li>
+     *   <li>Load callee + marshal args → invoke {@code evaluate} →
+     *       encode result. Errors are mapped to the closest existing
+     *       wasm-call-error arm.</li>
+     *   <li>Fuel reflection (Phase-N4) — callee's fuelConsumed is debited
+     *       against caller's ComponentInstance after the callee returns.</li>
+     * </ol>
+     */
+    static Object[] invokeWasmDispatch(final Object[] args,
+                                       final String method,
+                                       final CalleeReturnShape returnShape,
+                                       final CalleeInvoker invoker) {
+        if (!WebFunctionConfig.callbackEnabled()) {
             return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
-                "invoke-wasm-service: not implemented on JVM host (MVP stub — full "
-                + "sub-component dispatch is future work)")) };
-        };
+                "wf callback disabled by webfunctions.callback.enabled=false")) };
+        }
+        final CallbackContext ctx = CallbackContext.current();
+        // Decode string args first so capability enforcement + audit-summary
+        // see the actual URL. Arg indices differ between the two host
+        // functions — invoke-wasm has (uri, function-name, args); invoke-wasm-
+        // service has (uri, args). Detect by return-shape.
+        final String url = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+        final ComponentVal argsListVal;
+        final String functionNameOrNull;
+        if (returnShape == CalleeReturnShape.SINGLE_TERM) {
+            // invoke-wasm shape: (uri, function-name, args)
+            functionNameOrNull = args.length > 1 ? ((ComponentVal) args[1]).asString() : "";
+            argsListVal = args.length > 2 ? (ComponentVal) args[2] : null;
+        } else {
+            // invoke-wasm-service shape: (uri, args)
+            functionNameOrNull = null;
+            argsListVal = args.length > 1 ? (ComponentVal) args[1] : null;
+        }
+        // Capability enforcement + toll — the WitHostFunction factories
+        // wire the same three checks before delegating here, but the
+        // package-private overload takes them itself so tests exercise the
+        // full gate without going through the factory shim.
+        try {
+            enforceCapability(ctx, "wasm-callbacks", method, url);
+            enforceWasmCalleeCapability(ctx, method, url);
+        } catch (WfCapabilityError.PerCallDenied denied) {
+            // Capability wave already promotes this to a typed SPARQL
+            // error at the outer catch surface — but at the WIT boundary
+            // we translate to the closest wasm-call-error variant so a
+            // guest that catches the callback receives a typed result
+            // rather than a wasm trap.
+            return new Object[] { ComponentVal.err(wasmCallError(
+                "not-permitted",
+                method + ": " + denied.reason()
+                    + (denied.getMessage() == null ? "" : " (" + denied.getMessage() + ")"))) };
+        }
+        if (ctx != null) {
+            try {
+                ctx.chargeToll("wasm-callbacks." + method);
+            } catch (WfBudgetError.HostCallbackTollExhausted exhausted) {
+                // Preserve the fuel-error unwind path — the outer catch
+                // in Call.evaluate / WebFunctionServiceOperator promotes it.
+                throw exhausted;
+            }
+        }
+        if (ctx == null) {
+            return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
+                method + ": no callback context bound — invoke-wasm needs the wf:call "
+                + "frame to bind one so the callee can resolve the caller's dictionary")) };
+        }
+        if (ctx.dictionary() == null) {
+            return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
+                method + ": needs the outer query's MappingDictionary on the "
+                + "CallbackContext — bind with bind(dictionary) at the top of the "
+                + "wf:call frame")) };
+        }
+        // Nesting-depth guard — MVP single-level rule.
+        if (ctx.wasmCallDepth() >= 1) {
+            return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
+                method + ": nested wasm-callbacks invocation not permitted — "
+                + "single-level nesting only (MVP; full recursion is future work). "
+                + "Closest existing wasm-call-error variant is not-permitted; "
+                + "host-callbacks.wit lacks a nesting-specific arm.")) };
+        }
+        return executeAsInvoker(ctx, "wasm-callbacks", method, url, () ->
+            invokeWasmDispatchInner(ctx, url, functionNameOrNull, argsListVal, returnShape, invoker));
+    }
+
+    private static Object[] invokeWasmDispatchInner(final CallbackContext ctx,
+                                                    final String url,
+                                                    final String functionNameOrNull,
+                                                    final ComponentVal argsListVal,
+                                                    final CalleeReturnShape returnShape,
+                                                    final CalleeInvoker invoker) {
+        // Marshal args from WIT term list → Value[] BEFORE loading the
+        // callee so a bad arg doesn't burn the load cost. Any decode
+        // failure lands as invocation-error (closest existing variant —
+        // an argument-error variant would need a WIT change).
+        final Value[] callArgs;
+        try {
+            callArgs = decodeTermV1List(argsListVal);
+        } catch (RuntimeException e) {
+            return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
+                "invoke-wasm: argument decode failed: "
+                + (e.getMessage() == null ? e.toString() : e.getMessage()))) };
+        }
+        // Snapshot caller's fuel context before the callee stamps its own
+        // ComponentInstance in stampComponentInstanceOnCurrentContext.
+        // Deferred fuel reflection lives in the finally block below.
+        final ai.tegmentum.webassembly4j.api.ComponentInstance callerInstance =
+                ctx.componentInstanceOrNull();
+        ctx.enterWasmCall();
+        try {
+            final StardogWasmInstance calleeInstance;
+            try {
+                calleeInstance = invoker.load(url, ctx.dictionary());
+            } catch (java.net.MalformedURLException mue) {
+                return new Object[] { ComponentVal.err(wasmCallError("not-found",
+                    "invoke-wasm: malformed callee url '" + url + "': "
+                    + (mue.getMessage() == null ? mue.toString() : mue.getMessage()))) };
+            } catch (java.util.concurrent.ExecutionException ee) {
+                final Throwable cause = ee.getCause() == null ? ee : ee.getCause();
+                return new Object[] { ComponentVal.err(wasmCallError("not-found",
+                    "invoke-wasm: failed to load callee '" + url + "': "
+                    + (cause.getMessage() == null ? cause.toString() : cause.getMessage()))) };
+            } catch (SecurityException se) {
+                return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
+                    "invoke-wasm: load denied for '" + url + "': "
+                    + (se.getMessage() == null ? se.toString() : se.getMessage()))) };
+            } catch (RuntimeException re) {
+                // Shiro auth exceptions are RuntimeExceptions; discriminate
+                // by class-name to avoid a compile-time shiro-core dep.
+                final String cn = re.getClass().getName();
+                if (cn.endsWith("AuthorizationException") || cn.endsWith("AuthenticationException")) {
+                    return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
+                        "invoke-wasm: load denied for '" + url + "': "
+                        + (re.getMessage() == null ? re.toString() : re.getMessage()))) };
+                }
+                return new Object[] { ComponentVal.err(wasmCallError("not-found",
+                    "invoke-wasm: failed to load callee '" + url + "': "
+                    + (re.getMessage() == null ? re.toString() : re.getMessage()))) };
+            }
+            try (StardogWasmInstance owned = calleeInstance) {
+                // Callee's evaluate stamps its own ComponentInstance on
+                // the ctx via stampComponentInstanceOnCurrentContext.
+                // function-name is not consulted by the base sparql-extension
+                // world — extension.call auto-discovers the single filter
+                // function via register(); a WIT-level explicit function-name
+                // dispatch is deferred to a follow-up wave. Preserve the
+                // arg on the wire for future use.
+                final com.stardog.stark.query.SelectQueryResult rs;
+                try {
+                    rs = owned.evaluate(callArgs);
+                } catch (java.io.IOException ioe) {
+                    return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
+                        "invoke-wasm: callee trap: "
+                        + (ioe.getMessage() == null ? ioe.toString() : ioe.getMessage()))) };
+                } catch (RuntimeException re) {
+                    return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
+                        "invoke-wasm: callee trap: "
+                        + (re.getMessage() == null ? re.toString() : re.getMessage()))) };
+                }
+                try (com.stardog.stark.query.SelectQueryResult held = rs) {
+                    if (returnShape == CalleeReturnShape.SINGLE_TERM) {
+                        return new Object[] { ComponentVal.ok(
+                            encodeSingleTermFromResult(held)) };
+                    } else {
+                        return new Object[] { ComponentVal.ok(
+                            encodeListOfBindingFromResult(held, ctx.maxRows())) };
+                    }
+                }
+            }
+        } finally {
+            // Restore caller's ComponentInstance and reflect callee's
+            // fuel consumption back into the caller's budget (Phase-N4).
+            reflectCalleeFuelAndRestoreCaller(ctx, callerInstance);
+            ctx.exitWasmCall();
+        }
+    }
+
+    /**
+     * Restore the caller's {@link
+     * ai.tegmentum.webassembly4j.api.ComponentInstance} on the callback
+     * context (the callee overwrote it in
+     * {@link StardogWasmInstance#stampComponentInstanceOnCurrentContext})
+     * and reflect the callee's fuelConsumed into the caller's budget so
+     * "callee fuel counts against caller" — Phase-1 fuel semantics
+     * extended one level.
+     *
+     * <p>Best-effort: providers that don't support
+     * {@code consumeFuel(long)} (endive / chicory / wamr / graalwasm)
+     * throw {@link ai.tegmentum.webassembly4j.api.exception.UnsupportedFeatureException}
+     * which is swallowed — the reflection is a wasmtime-only pathway
+     * today; the Java-side toll counter still tracks host-callback tolls
+     * for cross-provider accounting.
+     */
+    private static void reflectCalleeFuelAndRestoreCaller(
+            final CallbackContext ctx,
+            final ai.tegmentum.webassembly4j.api.ComponentInstance callerInstance) {
+        long calleeFuelUsed = -1L;
+        try {
+            calleeFuelUsed = ctx.fuelConsumed();
+        } catch (RuntimeException ignore) {
+            // fuelConsumed already null-guards internally; this catch is
+            // defensive against provider surprise.
+        }
+        // Restore caller's ComponentInstance (may be null on unit-test
+        // paths that never stamped one).
+        ctx.setComponentInstance(callerInstance);
+        if (callerInstance == null || calleeFuelUsed <= 0L) return;
+        try {
+            callerInstance.consumeFuel(calleeFuelUsed);
+        } catch (ai.tegmentum.webassembly4j.api.exception.UnsupportedFeatureException unsupported) {
+            // Non-wasmtime provider — reflection is best-effort; the
+            // Java-side toll counter still tracks host-callback tolls.
+        } catch (ai.tegmentum.webassembly4j.api.exception.WebAssemblyException
+                | IllegalStateException exhausted) {
+            // Caller's budget went negative reflecting the callee's
+            // usage — treat as fuel exhaustion in the caller frame. The
+            // outer wf:call catch surface promotes this to a typed
+            // WfBudgetError via chargeToll's usual promotion path, so
+            // we stamp the exhaustion sentinel and throw the same
+            // HostCallbackTollExhausted the toll path uses.
+            throw new WfBudgetError.HostCallbackTollExhausted(
+                    ctx.extensionUri(),
+                    "wasm-callbacks.callee-fuel-reflect",
+                    calleeFuelUsed,
+                    calleeFuelUsed, /* budget: unknown at this frame */
+                    calleeFuelUsed);
+        }
+    }
+
+    /** Decode a WIT {@code list<term>} argument into Stardog {@link Value}s. */
+    private static Value[] decodeTermV1List(final ComponentVal listVal) {
+        if (listVal == null) return new Value[0];
+        final List<ComponentVal> inner = listVal.asList();
+        final Value[] out = new Value[inner.size()];
+        for (int i = 0; i < inner.size(); i++) {
+            out[i] = decodeTermV1(inner.get(i));
+        }
+        return out;
+    }
+
+    /**
+     * Decode a base-substrate {@code tegmentum:webfunction/types.term}
+     * variant (4 arms — named-node / blank-node / literal / triple)
+     * into a Stardog {@link Value}. Mirrors {@link #encodeTermV1}.
+     * Rejects the {@code triple} arm the same way
+     * {@link WitValueMarshaller#valueFromWit} does — Stardog's planner
+     * surface has no notion of quoted triples.
+     */
+    private static Value decodeTermV1(final ComponentVal variant) {
+        final ComponentVariant cv = variant.asVariant();
+        final String caseName = cv.getCaseName();
+        final ComponentVal payload = cv.getPayload().orElse(null);
+        switch (caseName) {
+            case "named-node":
+                return Values.iri(payload == null ? "" : payload.asString());
+            case "blank-node":
+                return Values.bnode(payload == null ? "" : payload.asString());
+            case "literal": {
+                if (payload == null) {
+                    throw new IllegalStateException("wf: literal variant has no payload");
+                }
+                final Map<String, ComponentVal> fields = payload.asRecord();
+                final String value = fields.get("value").asString();
+                final Optional<ComponentVal> dtOpt = fields.get("datatype").asSome();
+                final Optional<ComponentVal> langOpt = fields.get("language").asSome();
+                if (langOpt.isPresent()) {
+                    return Values.literal(value, langOpt.get().asString());
+                }
+                if (dtOpt.isPresent()) {
+                    return Values.literal(value, Values.iri(dtOpt.get().asString()));
+                }
+                // RDF 1.1: absent datatype + absent language ≡ xsd:string.
+                return Values.literal(value);
+            }
+            case "triple":
+                throw new IllegalArgumentException(
+                    "wasm-callbacks: term variant 'triple' (RDF-star quoted triple) "
+                    + "is not supported at the Stardog boundary");
+            default:
+                throw new IllegalArgumentException(
+                    "wasm-callbacks: unknown term case: " + caseName);
+        }
+    }
+
+    /**
+     * Encode the callee's single-row {@link
+     * com.stardog.stark.query.SelectQueryResult} (from
+     * {@link StardogWasmInstance#evaluate}) as a single {@code term}.
+     * The callee's evaluate wraps its scalar return as a 1-row 1-binding
+     * SelectQueryResult with the well-known {@code value_0} name (see
+     * {@link WitValueMarshaller#singleTermToSelectQueryResult}); we
+     * unwrap that here and re-encode as a v1 term.
+     */
+    private static ComponentVal encodeSingleTermFromResult(
+            final com.stardog.stark.query.SelectQueryResult rs) {
+        if (!rs.hasNext()) {
+            // Callee produced no rows — no term to return. Encode an
+            // empty-string named-node as a placeholder; a future WIT
+            // revision could add an "empty" arm.
+            return ComponentVal.variant("named-node", ComponentVal.string(""));
+        }
+        final BindingSet bs = rs.next();
+        final Value v = bs.get("value_0");
+        if (v == null) {
+            return ComponentVal.variant("named-node", ComponentVal.string(""));
+        }
+        return encodeTermV1(v);
+    }
+
+    /**
+     * Encode the callee's {@link com.stardog.stark.query.SelectQueryResult}
+     * as a WIT {@code list<binding>}. Flatten all rows into a single
+     * list keyed by variable name — same shape
+     * {@link #graphExecuteQuery} produces for the bindings arm of its
+     * query-result variant.
+     */
+    private static ComponentVal encodeListOfBindingFromResult(
+            final com.stardog.stark.query.SelectQueryResult rs,
+            final int rowCap) {
+        final List<String> vars = rs.variables();
+        final List<ComponentVal> bindings = new ArrayList<>();
+        int rowsSeen = 0;
+        while (rs.hasNext() && rowsSeen < rowCap) {
+            final BindingSet bs = rs.next();
+            for (String var : vars) {
+                final Value v = bs.get(var);
+                if (v == null) continue;
+                final Map<String, ComponentVal> bindingFields = new LinkedHashMap<>();
+                bindingFields.put("variable", ComponentVal.string(var));
+                bindingFields.put("value", encodeTermV1(v));
+                bindings.add(ComponentVal.record(bindingFields));
+            }
+            rowsSeen++;
+        }
+        return ComponentVal.list(bindings);
     }
 
     private static ComponentVal wasmCallError(final String armName, final String message) {

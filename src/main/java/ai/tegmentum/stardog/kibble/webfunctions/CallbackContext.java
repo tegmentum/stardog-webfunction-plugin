@@ -109,6 +109,13 @@ public final class CallbackContext {
     // enforcement is disabled or when the extension had no ask.
     private CapabilityAsk capabilityAsk;
 
+    // wasm-callbacks single-level nesting counter. Incremented on entry
+    // to invoke-wasm / invoke-wasm-service dispatch, decremented on
+    // exit. HostCallbacks rejects a nested wasm-callbacks call (depth
+    // >= 1 on entry) with a wasm-call-error variant per the MVP
+    // "callee cannot itself invoke another callee" invariant.
+    private int wasmCallDepth = 0;
+
     // v0.3.2 prepared-query handles. The Stardog QueryFactory produces a
     // ReadQuery bound to a specific connection + monitor; we re-parse per
     // call today, but Stardog's kernel-level plan cache short-circuits the
@@ -457,6 +464,43 @@ public final class CallbackContext {
 
     public int depth() {
         return depth;
+    }
+
+    /**
+     * Current wasm-callbacks nesting depth. Zero at the outermost frame;
+     * one while a callee is executing. HostCallbacks rejects a call
+     * when this is already {@code >= 1} on entry to invoke-wasm /
+     * invoke-wasm-service to enforce the MVP single-level nesting rule.
+     */
+    public int wasmCallDepth() {
+        return wasmCallDepth;
+    }
+
+    /**
+     * Increment the wasm-callbacks nesting counter. Called by
+     * HostCallbacks right before dispatching into a callee's evaluate.
+     * Must be paired with {@link #exitWasmCall()} in a try/finally so
+     * a callee-side trap does not leave the counter stuck at 1.
+     */
+    public int enterWasmCall() {
+        return ++wasmCallDepth;
+    }
+
+    /** Decrement the wasm-callbacks nesting counter. */
+    public int exitWasmCall() {
+        return --wasmCallDepth;
+    }
+
+    /**
+     * The wasm-provider {@link ComponentInstance} currently stamped on
+     * this context (the callee's during a nested invoke-wasm dispatch,
+     * the caller's otherwise), or {@code null} when nothing is
+     * stamped. Package-private — HostCallbacks needs to snapshot the
+     * caller's instance before the callee overwrites it so it can
+     * restore + reflect the callee's fuel consumption after return.
+     */
+    ComponentInstance componentInstanceOrNull() {
+        return componentInstance;
     }
 
     public int maxRows() {
