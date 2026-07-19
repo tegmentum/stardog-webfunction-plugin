@@ -62,22 +62,23 @@ public final class KernelBackedCapabilityPolicyStore implements CapabilityPolicy
     private final AtomicBoolean ready = new AtomicBoolean(false);
 
     /**
-     * Default management database name — {@code system-webfunctions-capability}.
-     * R7 (config keys sub-phase) will move this constant into
-     * {@link WebFunctionConfig} once the system-property surface lands.
+     * Default management database name mirrors
+     * {@link WebFunctionConfig#DEFAULT_CAPABILITY_POLICY_STORE_DATABASE}.
+     * Kept as a class-level constant so tests can assert on it without
+     * touching config.
      */
-    public static final String DEFAULT_DATABASE_NAME = "system-webfunctions-capability";
+    public static final String DEFAULT_DATABASE_NAME =
+            WebFunctionConfig.DEFAULT_CAPABILITY_POLICY_STORE_DATABASE;
 
     /**
-     * Guice-friendly constructor. Reads the default management-database
-     * name — R7 flips this to read from
-     * {@link WebFunctionConfig#capabilityPolicyDatabaseName()} once the
-     * system-property surface lands so a deployment that wants a
-     * differently-named policy DB can override.
+     * Guice-friendly constructor. Reads
+     * {@link WebFunctionConfig#capabilityPolicyDatabaseName()} for the
+     * management database name so a deployment that wants a differently-
+     * named policy DB overrides via system property.
      */
     @Inject
     public KernelBackedCapabilityPolicyStore(final Kernel kernel) {
-        this(kernel, DEFAULT_DATABASE_NAME);
+        this(kernel, WebFunctionConfig.capabilityPolicyDatabaseName());
     }
 
     /**

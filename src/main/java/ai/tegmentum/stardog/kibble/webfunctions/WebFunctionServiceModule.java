@@ -101,15 +101,25 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
 
         @Override
         public void install(final Kernel theKernel) throws StardogException {
-            // Anonymous policy setter is idempotent; setting it even when the
-            // gate is off keeps the resolver's ambient behavior consistent
-            // with the declared config, so a later flip-to-enabled behaves
-            // identically to a boot-with-enabled.
+            // Idempotent config wiring — set every time so a later
+            // enable / anonymous-policy / unknown-extension-policy flip
+            // in system properties takes effect on the next boot cycle
+            // without extra plumbing.
             CapabilityPolicyResolver.setAnonymousPolicy(WebFunctionConfig.getAnonymousPolicy());
+            CapabilityPolicyResolver.setUnknownExtensionPolicy(
+                    WebFunctionConfig.unknownExtensionPolicy());
             CapabilityAttributionRing.INSTANCE.setEnabled(WebFunctionConfig.isAuditEnabled());
             CapabilityAttributionRing.INSTANCE.setCapacity(WebFunctionConfig.getAuditCapacity());
 
             if (!WebFunctionConfig.isCapabilityEnabled()) return;
+
+            // Bootstrap the Kernel-backed policy store (creates the
+            // system-webfunctions-capability database as super-user if
+            // absent) and install it into the resolver so every
+            // instantiation-time resolve() consults it.
+            final KernelBackedCapabilityPolicyStore store =
+                    KernelBackedCapabilityPolicyStore.wire(theKernel);
+            CapabilityPolicyResolver.setPolicyStore(store);
 
             CapabilityEnforcer.install(CapabilityEnforcer.create());
             CapabilityEnforcer.setEnabled(true);

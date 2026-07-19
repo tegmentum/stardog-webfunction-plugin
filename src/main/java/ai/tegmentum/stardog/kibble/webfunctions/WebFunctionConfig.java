@@ -79,13 +79,15 @@ public final class WebFunctionConfig {
     //   ~/git/stardog-webfunction-wit/docs/design/capability-implementation.md
     //     §5 (resolver flow), §7 (enforcer flow), §8 (permission strings),
     //     §12 (default policy — DENY anonymous, audit enabled).
-    public static final String PROP_CAPABILITY_ENABLED           = "webfunctions.capability.enabled";
-    public static final String PROP_CAPABILITY_REQUIRE_MANIFEST  = "webfunctions.capability.require-manifest";
-    public static final String PROP_CAPABILITY_ANONYMOUS_POLICY  = "webfunctions.capability.anonymous-policy";
-    public static final String PROP_CAPABILITY_AUDIT_ENABLED     = "webfunctions.capability.audit.enabled";
-    public static final String PROP_CAPABILITY_AUDIT_CAPACITY    = "webfunctions.capability.audit.capacity";
+    public static final String PROP_CAPABILITY_ENABLED                   = "webfunctions.capability.enabled";
+    public static final String PROP_CAPABILITY_ANONYMOUS_POLICY          = "webfunctions.capability.anonymous-policy";
+    public static final String PROP_CAPABILITY_UNKNOWN_EXTENSION_POLICY  = "webfunctions.capability.unknown-extension-policy";
+    public static final String PROP_CAPABILITY_POLICY_STORE_DATABASE     = "webfunctions.capability.policy-store.database-name";
+    public static final String PROP_CAPABILITY_AUDIT_ENABLED             = "webfunctions.capability.audit.enabled";
+    public static final String PROP_CAPABILITY_AUDIT_CAPACITY            = "webfunctions.capability.audit.capacity";
 
-    public static final int DEFAULT_CAPABILITY_AUDIT_CAPACITY    = 100_000;
+    public static final int    DEFAULT_CAPABILITY_AUDIT_CAPACITY         = 100_000;
+    public static final String DEFAULT_CAPABILITY_POLICY_STORE_DATABASE  = "system-webfunctions-capability";
 
     public enum EngineMode { MODULE, COMPONENT }
 
@@ -312,16 +314,41 @@ public final class WebFunctionConfig {
     }
 
     /**
-     * Whether a missing sidecar manifest should fail extension instantiation.
-     * Default {@code true} — a Phase 1 deployment with capability enabled
-     * expects every extension to ship its declared capability contract.
-     * When {@code false} the loader falls back to {@link ExtensionManifest#ABSENT}
-     * so unsigned back-compat extensions load without a sidecar.
+     * Name of the Stardog-managed database that persists capability
+     * policy triples. Default {@code system-webfunctions-capability}.
+     * Mirrors the {@code webfunctions.fuel.state-store.database-name}
+     * pattern from Phase 2 fuel metering.
      */
-    public static boolean isRequireManifest() {
-        final String raw = System.getProperty(PROP_CAPABILITY_REQUIRE_MANIFEST);
-        if (raw == null || raw.isEmpty()) return true;
-        return Boolean.parseBoolean(raw.trim());
+    public static String capabilityPolicyDatabaseName() {
+        final String raw = System.getProperty(PROP_CAPABILITY_POLICY_STORE_DATABASE);
+        return raw == null || raw.isEmpty()
+                ? DEFAULT_CAPABILITY_POLICY_STORE_DATABASE
+                : raw.trim();
+    }
+
+    /**
+     * Behavior when the policy store has no policy triples for the
+     * extension URL. {@code deny} is the prod default per the refactor
+     * brief; {@code permit} treats the extension as pre-capability
+     * (grants everything the component declares); {@code inherit} same
+     * as {@code permit} in Phase 1 (kept as a distinct value so a future
+     * phase can distinguish inherited-from-parent from open-permit).
+     */
+    public static CapabilityPolicyResolver.UnknownExtensionPolicy unknownExtensionPolicy() {
+        final String raw = System.getProperty(PROP_CAPABILITY_UNKNOWN_EXTENSION_POLICY);
+        if (raw == null || raw.isEmpty()) {
+            return CapabilityPolicyResolver.DEFAULT_UNKNOWN_EXTENSION_POLICY;
+        }
+        switch (raw.trim().toLowerCase()) {
+            case "deny":    return CapabilityPolicyResolver.UnknownExtensionPolicy.DENY;
+            case "permit":  return CapabilityPolicyResolver.UnknownExtensionPolicy.PERMIT;
+            case "inherit": return CapabilityPolicyResolver.UnknownExtensionPolicy.INHERIT;
+            default:
+                throw new IllegalArgumentException(
+                        PROP_CAPABILITY_UNKNOWN_EXTENSION_POLICY
+                                + " must be 'deny', 'permit', or 'inherit' (was: '"
+                                + raw + "')");
+        }
     }
 
     /**
