@@ -29,6 +29,8 @@ import java.nio.charset.Charset;
 @SuiteClasses({
     TestAggregate.class,
     TestArrayOf.class,
+    TestAuditRowSerialization.class,
+    TestAuditSinkRingIntegration.class,
     TestCache.class,
     TestCall.class,
     TestCallbackContext.class,
@@ -52,6 +54,7 @@ import java.nio.charset.Charset;
     TestMappingDictionaryAdd.class,
     TestMemoize.class,
     TestMethodPolicy.class,
+    TestNdjsonRotatingFileAuditSink.class,
     TestPartial.class,
     TestPluginVersion.class,
     TestPolicyTriples.class,
