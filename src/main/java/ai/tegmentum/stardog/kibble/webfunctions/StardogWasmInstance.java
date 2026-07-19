@@ -298,6 +298,15 @@ public class StardogWasmInstance implements Closeable {
                         // to decide the fallback.
                         preCtx.setInvokerSubject(currentInvokerSubjectOrNull());
                     }
+                    // Capability-ask wave — extract, parse, and record
+                    // the extension's declared ask so the admin has a
+                    // SPARQL-queryable review surface, and the warn-on-
+                    // undeclared diagnostic in HostCallbacks has an ask
+                    // to compare against ({@code capability-ask.md}
+                    // §§6+8). Best-effort: section absent or parse
+                    // failure both proceed with a warning per §6 — the
+                    // grant still gates execution regardless.
+                    extractAndRecordAsk(wasmUrl, preCtx);
                 } else {
                     grant = null;
                 }
@@ -387,6 +396,86 @@ public class StardogWasmInstance implements Closeable {
                 this.instance = module.instantiate(linkingContext);
                 break;
         }
+    }
+
+    /**
+     * Capability-ask wave — extract the extension-declared ask from the
+     * wasm's {@code stardog.capability-ask} custom section, parse the
+     * Turtle payload, record it under the ask named graph in the
+     * policy store, and stamp it onto the callback context so the
+     * warn-on-undeclared diagnostic in {@link HostCallbacks} has an ask
+     * to compare against.
+     *
+     * <p>Fail-open on every branch per {@code capability-ask.md} §6:
+     * <ul>
+     *   <li>bytes unavailable → log info + proceed with no ask stamped</li>
+     *   <li>custom section absent → log info + proceed (many legitimate
+     *       extensions predate the feature)</li>
+     *   <li>Turtle parse failure → log warning + proceed (admin cannot
+     *       review via SPARQL, but grant still gates execution)</li>
+     *   <li>store recordAsk failure → the store logs internally and
+     *       proceeds; ask is still stamped on the context for the
+     *       runtime diagnostic</li>
+     * </ul>
+     * Grant resolution decides authorization; ask insertion is
+     * diagnostic + review UX only.
+     *
+     * @param wasmUrl the extension URL — used as the ask's base IRI and
+     *                as the store key.
+     * @param ctx     the callback context to stamp the parsed ask onto,
+     *                or {@code null} when no context is bound (isolated
+     *                unit-test path).
+     */
+    private static void extractAndRecordAsk(final URL wasmUrl,
+                                            final CallbackContext ctx) {
+        final byte[] bytes;
+        try {
+            bytes = loadingCache.get(wasmUrl);
+        } catch (ExecutionException e) {
+            // Bytes fetch failed — capability enforcement's own load
+            // path already failed too, so this branch is unreachable in
+            // practice. Log defensively.
+            System.err.println("[wf-cap-ask] bytes unavailable for "
+                    + wasmUrl + ": " + e.getMessage());
+            return;
+        }
+        final java.util.Optional<byte[]> sectionPayload;
+        try {
+            sectionPayload = WasmCustomSectionReader.extractSection(
+                    bytes, "stardog.capability-ask");
+        } catch (MalformedWasmException mwe) {
+            // Malformed bytes at this point means the wasm somehow
+            // decoded far enough for the substrate to instantiate but
+            // fails the hand-rolled section walk. Unlikely; log and
+            // proceed with no ask.
+            System.err.println("[wf-cap-ask] custom-section scan failed for "
+                    + wasmUrl + ": " + mwe.getMessage());
+            return;
+        }
+        if (sectionPayload.isEmpty()) {
+            // No ask declared — legitimate case per memo §6 (extension
+            // predates the feature). Info-level; nothing to record.
+            System.err.println("[wf-cap-ask] no stardog.capability-ask section on "
+                    + wasmUrl + " (proceeding; admin has no ask to review)");
+            if (ctx != null) ctx.setAsk(CapabilityAsk.EMPTY);
+            return;
+        }
+        final CapabilityAsk ask;
+        try {
+            ask = CapabilityAskParser.parse(sectionPayload.get(), wasmUrl);
+        } catch (IOException | RuntimeException parseFailure) {
+            System.err.println("[wf-cap-ask] unparseable capability ask on "
+                    + wasmUrl + " — admin cannot review via SPARQL: "
+                    + parseFailure.getMessage());
+            return;
+        }
+        // Best-effort store insert. The store swallows write failures
+        // internally per capability-ask.md §6; we still stamp on the
+        // context so the runtime diagnostic works even when the store
+        // write races or the DB is momentarily unavailable.
+        CapabilityPolicyResolver.policyStore()
+                .ifPresent(store -> store.recordAsk(wasmUrl, ask));
+        if (ctx != null) ctx.setAsk(ask);
     }
 
     private static Engine componentModeSharedEngine() {

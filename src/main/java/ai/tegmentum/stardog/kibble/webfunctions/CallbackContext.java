@@ -99,6 +99,16 @@ public final class CallbackContext {
     // decide the fallback.
     private org.apache.shiro.subject.Subject invokerSubject;
 
+    // Capability-ask wave — the extension-declared ask extracted at
+    // instantiation time from the wasm's `stardog.capability-ask` custom
+    // section (or empty when the extension shipped without one). Stamped
+    // by {@link StardogWasmInstance} right after the ask is inserted
+    // into the policy store, so {@link HostCallbacks} can consult it on
+    // every host-callback dispatch to fire the warn-on-undeclared
+    // diagnostic ({@code capability-ask.md} §8). Null when capability
+    // enforcement is disabled or when the extension had no ask.
+    private CapabilityAsk capabilityAsk;
+
     // v0.3.2 prepared-query handles. The Stardog QueryFactory produces a
     // ReadQuery bound to a specific connection + monitor; we re-parse per
     // call today, but Stardog's kernel-level plan cache short-circuits the
@@ -123,6 +133,32 @@ public final class CallbackContext {
         this.componentInstance = null;
         this.capabilityGrant = null;
         this.invokerSubject = null;
+        this.capabilityAsk = null;
+    }
+
+    /**
+     * Stamp the extension's declared capability ask onto this context.
+     * Called by {@link StardogWasmInstance} after extraction + parse
+     * (and after {@code recordAsk} lands into the policy store). Null
+     * is a valid state — signals that the extension shipped without a
+     * {@code stardog.capability-ask} custom section, or that capability
+     * enforcement is disabled entirely. Consumed by
+     * {@link HostCallbacks}' warn-on-undeclared diagnostic (§8 of the
+     * capability-ask memo).
+     */
+    public void setAsk(final CapabilityAsk ask) {
+        this.capabilityAsk = ask;
+    }
+
+    /**
+     * The ask stamped on this context, or empty when none was
+     * extracted (extension shipped without one, capability enforcement
+     * off, or parse failed and the caller decided to proceed without
+     * one per capability-ask memo §6). Consumed by {@link HostCallbacks}
+     * to fire the warn-on-undeclared diagnostic.
+     */
+    public Optional<CapabilityAsk> ask() {
+        return Optional.ofNullable(capabilityAsk);
     }
 
     /**
