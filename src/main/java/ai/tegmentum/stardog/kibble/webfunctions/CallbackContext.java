@@ -1,5 +1,8 @@
 package ai.tegmentum.stardog.kibble.webfunctions;
 
+import ai.tegmentum.webassembly4j.api.ComponentInstance;
+import ai.tegmentum.webassembly4j.api.exception.UnsupportedFeatureException;
+import ai.tegmentum.webassembly4j.api.exception.WebAssemblyException;
 import com.complexible.stardog.db.ConnectableConnection;
 import com.complexible.stardog.plan.eval.ExecutionContext;
 import com.complexible.stardog.plan.eval.ExecutionMonitor;
@@ -51,21 +54,24 @@ public final class CallbackContext {
     private final int maxRows;
     private int depth = 0;
 
-    // Fuel metering Phase 1 — per-invocation defensive toll accounting.
+    // Fuel metering Phase 1/1.x — per-invocation toll accounting.
     //
     // Populated when the outer wf:call frame runs setFuelMeteringContext
     // (from Call.evaluate / WebFunctionServiceOperator.computeNext, before
-    // dispatch). Java-side per-invocation counter — see the note in
-    // fuel-implementation.md §8 "honest failure paths": wasmtime4j-provider
-    // does not surface the store's consumeFuel API to component-mode
-    // callers today, so Phase 1 tracks the toll on the Java side. A
-    // wasmtime-store-level toll deduction is Phase-2 (or 1.x) work
-    // pending a small addition on the webassembly4j side.
-    private String  extensionUri;                 // "" until set
-    private long    tollBudget;                   // 0 disables toll checks
-    private long    tollUsed;                     // running total this invocation
-    private String  tollExhaustedCallback;        // sticky flag; null when not tripped
-    private long    tollHostCallbackToll;         // per-callback toll amount
+    // dispatch). As of webassembly4j 2.4.3 / wasmtime4j 1.4.7 the store's
+    // {@link ComponentInstance#consumeFuel(long)} is available on the
+    // wasmtime provider — chargeToll debits the real store fuel so a
+    // host-callback toll exhausts the same budget wasm instructions burn
+    // against. The Java-side {@code tollUsed} counter is retained as a
+    // best-effort observation for attribution rows and as the fallback
+    // path when the active provider throws {@link UnsupportedFeatureException}
+    // (endive, chicory, wamr, graalwasm — anything non-wasmtime).
+    private String            extensionUri;             // "" until set
+    private long              tollBudget;               // 0 disables toll checks
+    private long              tollUsed;                 // running total this invocation
+    private String            tollExhaustedCallback;    // sticky flag; null when not tripped
+    private long              tollHostCallbackToll;     // per-callback toll amount
+    private ComponentInstance componentInstance;        // null when not yet stamped or non-component mode
 
     // v0.3.2 prepared-query handles. The Stardog QueryFactory produces a
     // ReadQuery bound to a specific connection + monitor; we re-parse per
@@ -88,6 +94,40 @@ public final class CallbackContext {
         this.tollUsed = 0L;
         this.tollExhaustedCallback = null;
         this.tollHostCallbackToll = 0L;
+        this.componentInstance = null;
+    }
+
+    /**
+     * Stamp the wasm-provider {@link ComponentInstance} that is about to be
+     * invoked so {@link #chargeToll(String)} can debit real store fuel via
+     * {@link ComponentInstance#consumeFuel(long)}. Called by
+     * {@link StardogWasmInstance} right before the guest export dispatches;
+     * cleared when the CallbackContext is unbound. Null is a valid state
+     * (module-mode dispatch has no ComponentInstance to stamp; falls back to
+     * the Java-side toll counter).
+     */
+    public void setComponentInstance(final ComponentInstance componentInstance) {
+        this.componentInstance = componentInstance;
+    }
+
+    /**
+     * Query the store's actual fuel consumption for the currently-stamped
+     * {@link ComponentInstance}, or {@code -1} when unavailable (module mode,
+     * no instance stamped, or provider does not support
+     * {@link ComponentInstance#fuelConsumed()}). Used by {@link FuelTrapMapper}
+     * and {@link UserFuelPolicy} to report real fuel usage in typed errors and
+     * post-invocation accounting instead of the Java-side lower-bound toll.
+     */
+    public long fuelConsumed() {
+        if (componentInstance == null) return -1L;
+        try {
+            return componentInstance.fuelConsumed();
+        } catch (RuntimeException ignore) {
+            // Provider-side fuel query threw; treat as unsupported. Sentinel
+            // -1 signals "unknown" to callers; they fall back to tollUsed
+            // or the per-invocation cap.
+            return -1L;
+        }
     }
 
     /**
@@ -154,18 +194,53 @@ public final class CallbackContext {
     /**
      * Charge the configured host-callback toll for a named callback
      * before it dispatches. No-op when the toll budget is zero (fuel
-     * disabled). If the toll would overflow the per-invocation budget,
-     * stamps {@link #tollExhaustedCallback()} and throws
+     * disabled). Debits the store's real fuel through
+     * {@link ComponentInstance#consumeFuel(long)} when the active provider
+     * supports it (wasmtime as of webassembly4j 2.4.3), so the toll
+     * exhausts the same budget wasm instructions burn against. Providers
+     * that throw {@link UnsupportedFeatureException} (or the module-mode
+     * dispatch path, which has no ComponentInstance to charge against)
+     * fall through to the Java-side {@link #tollUsed} counter.
+     *
+     * <p>If the toll cannot be paid — real-store exhaustion, Java-side
+     * overflow, or provider deduction failure — stamps
+     * {@link #tollExhaustedCallback()} and throws
      * {@link WfBudgetError.HostCallbackTollExhausted} so the wasm frame
-     * unwinds — the outer try/catch in Call.evaluate /
-     * WebFunctionServiceOperator promotes the caught error into the
-     * typed SPARQL surface. Callers pass the WIT-path callback name
-     * (e.g. {@code "graph-callbacks.execute-query"}) that shows up in
-     * the JSON payload.
+     * unwinds; the outer try/catch in {@link Call#evaluate} /
+     * {@link WebFunctionServiceOperator#computeNext} promotes the caught
+     * error into the typed SPARQL surface. Callers pass the WIT-path
+     * callback name (e.g. {@code "graph-callbacks.execute-query"}) that
+     * shows up in the JSON payload.
      */
     public void chargeToll(final String callbackName) {
         if (tollBudget <= 0L) return;                    // fuel metering off
         if (tollHostCallbackToll <= 0L) return;          // toll disabled
+        // Real-store deduction path (wasmtime provider on component mode).
+        // On any failure — WebAssemblyException (deduction overrun, provider
+        // fault) or the deduction-exceeded ExecutionException surface — treat
+        // it as toll exhaustion and promote to the typed SPARQL error.
+        // UnsupportedFeatureException is caught separately below so unsupported
+        // providers fall back to the Java-side toll counter without failing
+        // the invocation.
+        if (componentInstance != null) {
+            try {
+                componentInstance.consumeFuel(tollHostCallbackToll);
+                tollUsed += tollHostCallbackToll;
+                return;
+            } catch (UnsupportedFeatureException unsupported) {
+                // Fall through to the Java-side path below.
+            } catch (WebAssemblyException | IllegalStateException exhausted) {
+                tollExhaustedCallback = callbackName;
+                final long consumed = fuelConsumed();
+                throw new WfBudgetError.HostCallbackTollExhausted(
+                        extensionUri,
+                        callbackName,
+                        consumed >= 0L ? consumed : tollUsed,
+                        tollBudget,
+                        tollHostCallbackToll);
+            }
+        }
+        // Java-side fallback (module-mode, or provider without consumeFuel).
         if (tollUsed + tollHostCallbackToll > tollBudget) {
             tollExhaustedCallback = callbackName;
             throw new WfBudgetError.HostCallbackTollExhausted(

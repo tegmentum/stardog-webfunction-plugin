@@ -543,6 +543,7 @@ public class StardogWasmInstance implements Closeable {
 
     public SelectQueryResult evaluate(final Value... values) throws IOException {
         if (isComponentMode()) {
+            stampComponentInstanceOnCurrentContext();
             return componentExtensionCall(values);
         }
         final WasmMemoryRef input = writeToWasmMemory("memory", values);
@@ -569,6 +570,7 @@ public class StardogWasmInstance implements Closeable {
 
     public SelectQueryResult compute(final Value[] values, long multiplicity) throws IOException {
         if (isComponentMode()) {
+            stampComponentInstanceOnCurrentContext();
             componentAggregateStep(values, multiplicity);
             // aggregate.step returns void; the materialized value is fetched
             // separately via aggregateGetValue() through resource.finish.
@@ -584,6 +586,7 @@ public class StardogWasmInstance implements Closeable {
 
     public SelectQueryResult aggregateGetValue() {
         if (isComponentMode()) {
+            stampComponentInstanceOnCurrentContext();
             return componentAggregateFinish();
         }
         final Function evaluateFunction = instance.function(WASM_FUNCTION_GET_VALUE).get();
@@ -595,6 +598,25 @@ public class StardogWasmInstance implements Closeable {
         // Component mode uses a shared cached component (not held on `this`),
         // so distinguish by mode config rather than by nullness of `component`.
         return WebFunctionConfig.engineMode() == WebFunctionConfig.EngineMode.COMPONENT;
+    }
+
+    /**
+     * Plumb the underlying {@link ComponentInstance} onto the current
+     * {@link CallbackContext} so {@link CallbackContext#chargeToll(String)}
+     * (and {@link CallbackContext#fuelConsumed()}) can debit / read the
+     * real store fuel through the wasmtime4j 1.4.7 / webassembly4j 2.4.3
+     * API. No-op when there is no bound CallbackContext (embedded/test
+     * callers that dispatch without binding a callback context) or when
+     * {@code instance} is not a {@link ComponentInstance} (module-mode
+     * dispatch reaches this only via {@link #stampComponentInstanceOnCurrentContext()}
+     * called from the component-mode branch, so the cast is safe there).
+     */
+    private void stampComponentInstanceOnCurrentContext() {
+        final CallbackContext ctx = CallbackContext.current();
+        if (ctx == null) return;
+        if (instance instanceof ComponentInstance) {
+            ctx.setComponentInstance((ComponentInstance) instance);
+        }
     }
 
     private WitValueMarshaller marshaller() {
