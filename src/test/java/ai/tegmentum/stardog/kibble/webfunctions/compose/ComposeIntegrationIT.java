@@ -3,13 +3,16 @@ package ai.tegmentum.stardog.kibble.webfunctions.compose;
 import ai.tegmentum.stardog.kibble.StardogContainer;
 import ai.tegmentum.stardog.kibble.webfunctions.WebFunctionConfig;
 
+import com.complexible.stardog.StardogException;
 import com.complexible.stardog.api.Connection;
 import com.complexible.stardog.api.ConnectionConfiguration;
 import com.complexible.stardog.api.admin.AdminConnection;
 import com.complexible.stardog.api.admin.AdminConnectionConfiguration;
+import com.stardog.stark.Literal;
 import com.stardog.stark.Value;
 import com.stardog.stark.query.BindingSet;
 import com.stardog.stark.query.SelectQueryResult;
+import org.testcontainers.utility.MountableFile;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Rule;
@@ -299,6 +302,93 @@ public class ComposeIntegrationIT {
                 .anyMatch(pv -> cidUrl.equals(pv[1]));
     }
 
+    // ---- IE3 ------------------------------------------------------------
+
+    /**
+     * IE3 — a composed CID loads through the full extension pipeline
+     * and its execution is gated by the plugin's capability enforcer.
+     *
+     * <p>Compose the fixture plan to obtain composed wasm bytes; mount
+     * those bytes into the container at
+     * {@code /opt/wasm/composed_ie3.wasm}; assert that a wf:call
+     * against the composed URL is <em>denied</em> before any grant
+     * (capability master gate is on with {@code unknown-extension-policy=deny});
+     * insert a grant into the policy DB; assert that the same wf:call
+     * now <em>succeeds</em> and returns the uppercase result the root
+     * component computes.
+     *
+     * <p>URL scheme note: the container's plugin JVM has its own
+     * {@link ComposedArtifactStore} instance whose {@code sha256://}
+     * handler resolves against an on-disk artifacts directory it owns,
+     * <em>not</em> the test JVM's. Rather than shipping the composed
+     * bytes into the container's compose-root and reaching in to
+     * synthesize a CID URL that the container can dereference, we mount
+     * the composed bytes at a stable {@code file://} path — which
+     * exercises the same {@code StardogWasmInstance.from(URL)} +
+     * capability-enforcer chain as {@code sha256://} loads (both funnel
+     * through the same URL#openConnection stream extraction). The C11
+     * unit test {@link TestSha256UrlLoader} covers the URL-scheme
+     * dereference contract on its own.
+     */
+    @Test
+    public void ie3_composedCidLoadsThroughExtensionPipeline() throws Exception {
+        ensurePolicyDb(SERVER_URL);
+
+        final PlanV1 plan = TestComposePlanFixtures.minimalPlan("uppercase", FIXTURE_WASM_DIGEST);
+        final byte[] composed = CLIENT.composeFromCbor(PlanV1Cbor.encode(plan));
+        assertThat(composed).isNotEmpty();
+
+        // Materialise the composed wasm on the host so we can mount it
+        // into the container. Same on-disk shape as the artifact store
+        // would produce; we use a stable filename so the file:// URL
+        // stays predictable across test runs.
+        final Path stagingDir = tmp.newFolder("compose-staging").toPath();
+        final Path composedFile = stagingDir.resolve("composed_ie3.wasm");
+        Files.write(composedFile, composed);
+
+        final String containerPath = "/opt/wasm/composed_ie3.wasm";
+        CONTAINER.copyFileToContainer(
+                MountableFile.forHostPath(composedFile.toAbsolutePath().toString()),
+                containerPath);
+        final String composedUrl = "file://" + containerPath;
+
+        // Purge any prior grant residue so the "denied before grant"
+        // half of the test observes the empty-policy state cleanly.
+        purgeExtension(SERVER_URL, composedUrl);
+
+        // --- Half A: denied when no grant ---------------------------
+        // With unknown-extension-policy=deny and no policy triples, the
+        // resolver refuses to instantiate the extension. Same error
+        // shape as CapabilityDenyIT.
+        final Throwable denied = catchThrown(() -> invokeUpper(composedUrl));
+        assertThat(denied)
+                .as("wf:call on composed URL must be denied before any grant is written")
+                .isNotNull();
+        assertThat(denied).isInstanceOf(StardogException.class);
+        final String deniedMessage = denied.getMessage() == null ? "" : denied.getMessage();
+        assertThat(deniedMessage).contains("WF_CAPABILITY_UNKNOWN_EXTENSION");
+        assertThat(deniedMessage).contains(composedUrl);
+
+        // --- Half B: permitted when granted -------------------------
+        // A trivial http-callbacks grant is enough to make the extension
+        // "known" — same idiom I5/I6 use. The uppercase root exports the
+        // `upper` filter function and imports no callback interface, so
+        // the grant intersection stays empty; the wf:call still succeeds.
+        grantHttpCallbacks(SERVER_URL, composedUrl);
+
+        try (Connection conn = ConnectionConfiguration.to(DB)
+                .server(SERVER_URL)
+                .credentials("admin", "admin")
+                .connect();
+             SelectQueryResult r = conn.select(upperQuery(composedUrl)).execute()) {
+            assertThat(r.hasNext()).isTrue();
+            final Optional<Value> v = r.next().value("result");
+            assertThat(v).isPresent();
+            assertThat(v.get()).isInstanceOf(Literal.class);
+            assertThat(((Literal) v.get()).label()).isEqualTo("STARDOG");
+        }
+    }
+
     // ---- helpers --------------------------------------------------------
 
     /**
@@ -371,6 +461,99 @@ public class ComposeIntegrationIT {
             }
         }
         return rows;
+    }
+
+    /**
+     * SPARQL prefix + namespace for the plugin's function vocabulary.
+     * Inlined to avoid a class-init NoClassDefFound on WebFunctionVocabulary
+     * — same reason WasmTestSuiteIT / CapabilityAskIT inline the literal.
+     */
+    private static final String WF_NAMESPACE =
+            "http://semantalytics.com/2021/03/ns/stardog/webfunction/latest/";
+
+    /**
+     * Capability-vocabulary namespace + IRI for the http-callbacks
+     * interface — inlined for the same shade-hostile reason WF_NAMESPACE is.
+     */
+    private static final String CAP_NAMESPACE =
+            "http://semantalytics.com/2021/03/ns/stardog/webfunction-capability/";
+    private static final String IFACE_HTTP_CALLBACKS =
+            "tegmentum:webfunction/http-callbacks@0.1.0";
+
+    private static String upperQuery(final String extensionUrl) {
+        return "PREFIX wf: <" + WF_NAMESPACE + ">"
+                + " SELECT ?result WHERE { BIND(wf:call(str(<" + extensionUrl + ">),"
+                + " \"upper\", \"stardog\") AS ?result) }";
+    }
+
+    /**
+     * Run the {@code upper} filter function on {@code extensionUrl} and
+     * drain the result. Discards the return value; callers that want the
+     * value use the inlined form (see IE3 Half B).
+     */
+    private static void invokeUpper(final String extensionUrl) {
+        try (Connection conn = ConnectionConfiguration.to(DB)
+                .server(SERVER_URL)
+                .credentials("admin", "admin")
+                .connect();
+             SelectQueryResult r = conn.select(upperQuery(extensionUrl)).execute()) {
+            while (r.hasNext()) r.next();
+        }
+    }
+
+    /**
+     * INSERT a minimal trusted + allow-interface grant into the policy
+     * DB, mirroring {@code CapabilityPolicyDbHelpers.grantInterfaces}
+     * with a single (interface, extension) pair.
+     */
+    private static void grantHttpCallbacks(final String serverUrl, final String extensionUrl) {
+        final String q =
+                "PREFIX cap: <" + CAP_NAMESPACE + ">\n"
+                + "INSERT DATA { <" + extensionUrl + "> cap:trusted true ; "
+                + "cap:allowInterface <" + IFACE_HTTP_CALLBACKS + "> . }";
+        try (Connection conn = ConnectionConfiguration.to(POLICY_DB)
+                .server(serverUrl)
+                .credentials("admin", "admin")
+                .connect()) {
+            conn.begin();
+            conn.update(q).execute();
+            conn.commit();
+        }
+    }
+
+    /**
+     * DELETE every triple in the policy DB anchored on
+     * {@code extensionUrl} — same idiom as
+     * {@code CapabilityPolicyDbHelpers.purgeExtension} but pared down to
+     * the default-graph half we care about here.
+     */
+    private static void purgeExtension(final String serverUrl, final String extensionUrl) {
+        final String q =
+                "DELETE { ?s ?p ?o } WHERE { ?s ?p ?o "
+                + "FILTER (?s = <" + extensionUrl + ">) }";
+        try (Connection conn = ConnectionConfiguration.to(POLICY_DB)
+                .server(serverUrl)
+                .credentials("admin", "admin")
+                .connect()) {
+            conn.begin();
+            conn.update(q).execute();
+            conn.commit();
+        }
+    }
+
+    /** Local Throwable-capturing helper — assertj-esque without the dep coupling. */
+    private static Throwable catchThrown(final ThrowingRunnable r) {
+        try {
+            r.run();
+            return null;
+        } catch (Throwable t) {
+            return t;
+        }
+    }
+
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
     }
 
     /**
