@@ -25,15 +25,33 @@ import static org.junit.Assume.assumeTrue;
  * export that returned multi-row multi-var binding-sets. The base
  * {@code sparql-extension} filter interface returns a single {@code
  * term}; the multi-row test surface belongs to the property-function
- * interface (not covered here). {@code multi_var_component} was
- * simplified to a two-arg {@code describe(label, upper)} filter that
- * concatenates its arguments — enough to exercise the multi-argument
- * call path end-to-end.
+ * interface (not covered here). The reference filter was simplified
+ * to a two-arg {@code describe(label, upper)} filter that concatenates
+ * its arguments — enough to exercise the multi-argument call path
+ * end-to-end.
+ *
+ * <p>Loads {@code example_multi_var_filter.wasm} from the shared
+ * webfunctions target — retired the stardog-plugin-local
+ * {@code multi_var_component} crate so all four engine bindings load
+ * one wasm.
+ *
+ * <p>Locator: {@code EXAMPLE_MULTI_VAR_FILTER_WASM} env override, else
+ * fall back to
+ * {@code $HOME/git/webfunctions/target/wasm32-wasip2/release/example_multi_var_filter.wasm}.
+ * Skips cleanly via {@code assumeTrue} if the wasm has not been built.
  */
 public class TestMultiVarComponent {
 
-    private static final String COMPONENT_PATH =
-            "src/test/rust/target/wasm32-wasip1/release/multi_var_component.wasm";
+    private static final String COMPONENT_PATH = resolveWasmPath();
+
+    private static String resolveWasmPath() {
+        final String env = System.getenv("EXAMPLE_MULTI_VAR_FILTER_WASM");
+        if (env != null && !env.isEmpty()) {
+            return env;
+        }
+        return System.getProperty("user.home")
+                + "/git/webfunctions/target/wasm32-wasip2/release/example_multi_var_filter.wasm";
+    }
 
     @Before
     public void enableComponentMode() {
@@ -49,9 +67,10 @@ public class TestMultiVarComponent {
     public void describeConcatenatesTwoLiteralArgs() throws Exception {
         final File wasm = new File(COMPONENT_PATH);
         assumeTrue(
-                "multi_var_component.wasm not built: " + wasm.getAbsolutePath()
-                        + " — run `cargo component build --release --package multi_var_component` "
-                        + "in src/test/rust",
+                "example-multi-var-filter wasm not built: " + wasm.getAbsolutePath()
+                        + " — run `cargo component build --release -p example-multi-var-filter "
+                        + "--target wasm32-wasip2` in ~/git/webfunctions, or set "
+                        + "EXAMPLE_MULTI_VAR_FILTER_WASM to the built component path",
                 wasm.exists());
 
         final URL url = wasm.toURI().toURL();

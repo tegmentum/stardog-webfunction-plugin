@@ -14,15 +14,30 @@ import java.net.URL;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.Assume.assumeTrue;
 
 /**
  * End-to-end smoke test for the component-mode aggregate lifecycle
- * (aggregate-step … × N then aggregate-finish). Uses the {@code sum} component.
+ * (aggregate-step … × N then aggregate-finish). Uses the {@code sum} component
+ * from the shared webfunctions target — retired the stardog-plugin-local
+ * {@code sum_component} crate so all four engine bindings load one wasm.
+ *
+ * <p>Locator: {@code EXAMPLE_SUM_AGGREGATE_WASM} env override, else fall back
+ * to {@code $HOME/git/webfunctions/target/wasm32-wasip2/release/example_sum_aggregate.wasm}.
+ * Skips cleanly via {@code assumeTrue} if the wasm has not been built.
  */
 public class TestComponentAggregate {
 
-    private static final String COMPONENT_PATH =
-            "src/test/rust/target/wasm32-wasip1/release/sum_component.wasm";
+    private static final String COMPONENT_PATH = resolveWasmPath();
+
+    private static String resolveWasmPath() {
+        final String env = System.getenv("EXAMPLE_SUM_AGGREGATE_WASM");
+        if (env != null && !env.isEmpty()) {
+            return env;
+        }
+        return System.getProperty("user.home")
+                + "/git/webfunctions/target/wasm32-wasip2/release/example_sum_aggregate.wasm";
+    }
 
     @Before
     public void enableComponentMode() {
@@ -37,12 +52,12 @@ public class TestComponentAggregate {
     @Test
     public void aggregateStepThenFinishReturnsSum() throws Exception {
         final File wasm = new File(COMPONENT_PATH);
-        if (!wasm.exists()) {
-            throw new org.junit.AssumptionViolatedException(
-                    "sum component wasm not built: " + wasm.getAbsolutePath()
-                            + " — run `cargo component build --release` in "
-                            + "src/test/rust/aggregate/sum_component");
-        }
+        assumeTrue(
+                "example-sum-aggregate wasm not built: " + wasm.getAbsolutePath()
+                        + " — run `cargo component build --release -p example-sum-aggregate "
+                        + "--target wasm32-wasip2` in ~/git/webfunctions, or set "
+                        + "EXAMPLE_SUM_AGGREGATE_WASM to the built component path",
+                wasm.exists());
 
         final URL url = wasm.toURI().toURL();
         try (StardogWasmInstance instance = new StardogWasmInstance(url)) {

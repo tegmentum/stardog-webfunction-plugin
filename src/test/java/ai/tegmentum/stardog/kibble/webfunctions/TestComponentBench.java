@@ -25,8 +25,20 @@ public class TestComponentBench {
 
     private static final String MODULE_WASM =
             "src/test/rust/target/wasm32-unknown-unknown/release/to_upper.wasm";
-    private static final String COMPONENT_WASM =
-            "src/test/rust/target/wasm32-wasip1/release/to_upper_component.wasm";
+    // Component wasm sourced from the shared webfunctions target — retired
+    // the stardog-plugin-local to_upper_component crate. Locator:
+    // EXAMPLE_UPPERCASE_WASM env override, else fall back to the well-known
+    // path under ~/git/webfunctions.
+    private static final String COMPONENT_WASM = resolveComponentWasm();
+
+    private static String resolveComponentWasm() {
+        final String env = System.getenv("EXAMPLE_UPPERCASE_WASM");
+        if (env != null && !env.isEmpty()) {
+            return env;
+        }
+        return System.getProperty("user.home")
+                + "/git/webfunctions/target/wasm32-wasip2/release/example_uppercase_extension.wasm";
+    }
 
     private static final int WARMUP = 500;
     private static final int MEASURED = 5_000;
@@ -38,8 +50,9 @@ public class TestComponentBench {
                 "1".equals(System.getProperty("bench")));
         assumeTrue("module wasm not built (cd src/test/rust && cargo make build)",
                 new File(MODULE_WASM).exists());
-        assumeTrue("component wasm not built (cd src/test/rust/function/to_upper_component "
-                        + "&& cargo component build --release)",
+        assumeTrue("example-uppercase-extension wasm not built (cd ~/git/webfunctions "
+                        + "&& cargo component build --release -p example-uppercase-extension "
+                        + "--target wasm32-wasip2), or set EXAMPLE_UPPERCASE_WASM to the built path",
                 new File(COMPONENT_WASM).exists());
     }
 

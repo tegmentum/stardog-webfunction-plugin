@@ -14,15 +14,32 @@ import java.net.URL;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.Assume.assumeTrue;
 
 /**
  * Direct-instantiation smoke test for the component-model call path.
  * Bypasses Stardog boot to focus on the WIT ABI round-trip.
+ *
+ * <p>Loads {@code example_uppercase_extension.wasm} from the shared
+ * webfunctions target — retired the stardog-plugin-local
+ * {@code to_upper_component} crate so all four engine bindings load one wasm.
+ *
+ * <p>Locator: {@code EXAMPLE_UPPERCASE_WASM} env override, else fall back
+ * to {@code $HOME/git/webfunctions/target/wasm32-wasip2/release/example_uppercase_extension.wasm}.
+ * Skips cleanly via {@code assumeTrue} if the wasm has not been built.
  */
 public class TestComponentMode {
 
-    private static final String COMPONENT_PATH =
-            "src/test/rust/target/wasm32-wasip1/release/to_upper_component.wasm";
+    private static final String COMPONENT_PATH = resolveWasmPath();
+
+    private static String resolveWasmPath() {
+        final String env = System.getenv("EXAMPLE_UPPERCASE_WASM");
+        if (env != null && !env.isEmpty()) {
+            return env;
+        }
+        return System.getProperty("user.home")
+                + "/git/webfunctions/target/wasm32-wasip2/release/example_uppercase_extension.wasm";
+    }
 
     @Before
     public void enableComponentMode() {
@@ -56,10 +73,11 @@ public class TestComponentMode {
     }
 
     private static void assumeBuilt(final File wasm) {
-        if (!wasm.exists()) {
-            throw new org.junit.AssumptionViolatedException(
-                    "component wasm not built: " + wasm.getAbsolutePath()
-                            + " — run `cargo component build --release` in src/test/rust/function/to_upper_component");
-        }
+        assumeTrue(
+                "example-uppercase-extension wasm not built: " + wasm.getAbsolutePath()
+                        + " — run `cargo component build --release -p example-uppercase-extension "
+                        + "--target wasm32-wasip2` in ~/git/webfunctions, or set "
+                        + "EXAMPLE_UPPERCASE_WASM to the built component path",
+                wasm.exists());
     }
 }
