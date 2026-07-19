@@ -39,11 +39,10 @@ import java.util.Optional;
  *
  * <p>The value model here mirrors the tegmentum:webfunction@0.1.0 base
  * (src/main/wit/base/types.wit) and the stardog:webfunction@0.3.0
- * overlay (src/main/wit/overlay/planner.wit). The plugin's runtime
- * dispatch (StardogWasmInstance) still uses the flat-world exports
- * (evaluate / aggregate-step / aggregate-finish / cardinality-estimate
- * / doc) rather than the base's sparql-extension world, so this
- * marshaller pairs those exports with the base's TYPE shapes:
+ * overlay (src/main/wit/overlay/planner.wit). {@link StardogWasmInstance}
+ * dispatches through the base sparql-extension world's {@code extension.call}
+ * / {@code aggregate-state.step} / {@code aggregate-state.finish} exports;
+ * this marshaller carries the base's TYPE shapes across that boundary:
  *
  * <ul>
  *   <li>{@code term} variant (4 arms — named-node / blank-node /
@@ -265,10 +264,9 @@ public final class WitValueMarshaller {
      * {@code aggregate-state.finish} into a {@link SelectQueryResult}
      * carrying one row with a single binding under the well-known
      * {@code value_0} variable name. The plugin's callers (Filter,
-     * Aggregate, Compose, Reduce, ...) still consume the module-mode
-     * {@link SelectQueryResult} shape; this keeps the sparql-extension
-     * component-mode dispatch a drop-in replacement without changing
-     * the plugin's higher-level ABI.
+     * Aggregate, Compose, Reduce, ...) consume the {@link SelectQueryResult}
+     * shape; wrapping the sparql-extension component-mode dispatch return
+     * that way preserves the plugin's higher-level ABI.
      */
     public SelectQueryResult singleTermToSelectQueryResult(final WitValue witValue) {
         final Value value = valueFromWit(witValue);
