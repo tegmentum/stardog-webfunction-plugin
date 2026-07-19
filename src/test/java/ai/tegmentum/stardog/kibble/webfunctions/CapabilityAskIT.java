@@ -20,6 +20,7 @@ import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runners.MethodSorters;
 import org.testcontainers.containers.Container;
+import org.testcontainers.utility.MountableFile;
 
 import java.io.File;
 
@@ -347,6 +348,64 @@ public class CapabilityAskIT {
                 .contains(GRAPH_CB_URL)
                 .contains("graph-callbacks")
                 .contains("execute-query");
+    }
+
+    // ---- I8 --------------------------------------------------------------
+
+    @Test
+    public void i8_askOverwriteOnReload() throws Exception {
+        // Grant one interface so the extension is "known" per the
+        // resolver — same trick I5 uses.
+        CapabilityPolicyDbHelpers.grantInterfaces(SERVER_URL, UPPERCASE_URL,
+                List.of(CapabilityVocabulary.IFACE_HTTP_CALLBACKS),
+                List.of());
+
+        // Round 1 — extension load records the v1 ask.
+        invokeUpper();
+        final List<String[]> v1Rows = CapabilityPolicyDbHelpers.readAskTriples(
+                SERVER_URL, UPPERCASE_URL);
+        assertThat(v1Rows).anyMatch(pv ->
+                CapabilityVocabulary.CAP_ASKS_HOST.equals(pv[0])
+                && "api.example.com".equals(pv[1]));
+        // A v2-only predicate the v1 round should NOT contain — the
+        // round-2 assertion relies on it appearing only after the swap.
+        assertThat(v1Rows).noneMatch(pv ->
+                CapabilityVocabulary.CAP_ASKS_INTERFACE.equals(pv[0])
+                && CapabilityVocabulary.IFACE_GRAPH_CALLBACKS.equals(pv[1]));
+
+        // Swap the wasm bytes on the container's filesystem — the
+        // plugin's byte cache (`loadingCache`) still holds v1 bytes,
+        // so we also invalidate via wf:cacheClear. (The COMPONENT_CACHE
+        // still holds the v1 compiled component — that's OK: the ask
+        // extraction reads bytes from the freshly-invalidated
+        // loadingCache, not from the cached component, so the ask
+        // pipeline sees v2 even though the executable component is
+        // v1's compiled form. Both fixtures share the same guest
+        // code — only the custom section differs.)
+        CONTAINER.copyFileToContainer(
+                MountableFile.forHostPath(new File(UPPERCASE_WITH_ASK_V2).getAbsolutePath()),
+                C_UPPERCASE);
+        clearWasmCache(UPPERCASE_URL);
+
+        // Round 2 — extension load re-reads bytes; extractAndRecordAsk
+        // parses v2's ask and the store's DELETE-then-INSERT overwrites
+        // v1's triples.
+        invokeUpper();
+
+        final List<String[]> v2Rows = CapabilityPolicyDbHelpers.readAskTriples(
+                SERVER_URL, UPPERCASE_URL);
+        // v2 predicates SHOULD be present.
+        assertThat(v2Rows).anyMatch(pv ->
+                CapabilityVocabulary.CAP_ASKS_HOST.equals(pv[0])
+                && "api.v2.example.com".equals(pv[1]));
+        assertThat(v2Rows).anyMatch(pv ->
+                CapabilityVocabulary.CAP_ASKS_INTERFACE.equals(pv[0])
+                && CapabilityVocabulary.IFACE_GRAPH_CALLBACKS.equals(pv[1]));
+        // v1 predicates SHOULD NOT be present anymore — the DELETE
+        // half of the overwrite fired.
+        assertThat(v2Rows).noneMatch(pv ->
+                CapabilityVocabulary.CAP_ASKS_HOST.equals(pv[0])
+                && "api.example.com".equals(pv[1]));
     }
 
     // ---- helpers ---------------------------------------------------------
