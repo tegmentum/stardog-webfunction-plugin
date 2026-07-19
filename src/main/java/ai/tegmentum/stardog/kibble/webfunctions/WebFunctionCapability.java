@@ -1,0 +1,58 @@
+package ai.tegmentum.stardog.kibble.webfunctions;
+
+/**
+ * Canonical permission strings for the capability-callback surface.
+ *
+ * <p>One constant per {@code (interface, method)} tuple in the Phase 1
+ * covered interfaces ({@code graph-callbacks}, {@code http-callbacks},
+ * {@code wasm-callbacks}). Naming follows Stardog's
+ * {@code resource-type:action:resource-id} convention per
+ * {@code capability-implementation.md} §8; the {@code resource-type}
+ * prefix matches {@link WebFunctionCallbackResourceType#ID}.
+ *
+ * <p>Consumed by {@link CapabilityEnforcer#perCallback} in the form
+ * {@code new WildcardPermission(WebFunctionCapability.GRAPH_QUERY)};
+ * Stardog's native {@code AuthorizingSecurityManager} already
+ * understands the wildcard-permission matcher, so admin grants like
+ * <pre>
+ *   stardog-admin role permission add wf-http-outbound \
+ *       "web-function-callback:invoke:http-callbacks/*"
+ * </pre>
+ * work through the same machinery.
+ *
+ * <p>Package-visible {@link #forInvoke} helper lets the enforcer build a
+ * permission string for interfaces / methods added post-MVP without a
+ * fresh constant per pair — Phase 5+ will land more callback surfaces
+ * ({@code sink-callbacks}, {@code fulltext-callbacks}), and their
+ * permission strings compute uniformly through this helper.
+ */
+public final class WebFunctionCapability {
+
+    /** Verb piece of the permission string — always {@code "invoke"} in Phase 1. */
+    public static final String ACTION_INVOKE = "invoke";
+
+    public static final String GRAPH_QUERY  = "web-function-callback:invoke:graph-callbacks/execute-query";
+    public static final String GRAPH_UPDATE = "web-function-callback:invoke:graph-callbacks/execute-update";
+    public static final String HTTP_GET     = "web-function-callback:invoke:http-callbacks/http-get";
+    public static final String HTTP_POST    = "web-function-callback:invoke:http-callbacks/http-post-json";
+    public static final String WASM_INVOKE  = "web-function-callback:invoke:wasm-callbacks/invoke-wasm";
+    public static final String WASM_SERVICE = "web-function-callback:invoke:wasm-callbacks/invoke-wasm-service";
+
+    private WebFunctionCapability() {}
+
+    /**
+     * Build the canonical permission string for a
+     * {@code (interfaceName, method)} tuple. Used by the enforcer to
+     * synthesize a permission check without a per-tuple constant.
+     *
+     * <p>Returns strings that string-equal the {@code *} constants for the
+     * Phase 1 covered tuples (verified in unit tests).
+     */
+    public static String forInvoke(final String interfaceName, final String method) {
+        return WebFunctionCallbackResourceType.ID
+                + ":" + ACTION_INVOKE + ":"
+                + (interfaceName == null ? "" : interfaceName)
+                + "/"
+                + (method == null ? "" : method);
+    }
+}
