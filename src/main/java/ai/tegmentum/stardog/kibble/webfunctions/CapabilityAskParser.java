@@ -40,12 +40,12 @@ import java.util.Set;
  */
 public final class CapabilityAskParser {
 
-    private static final String P_ASKS_INTERFACE   = CapabilityVocabulary.NAMESPACE + "asksInterface";
-    private static final String P_ASKS_METHOD      = CapabilityVocabulary.NAMESPACE + "asksMethod";
-    private static final String P_ASKS_HOST        = CapabilityVocabulary.NAMESPACE + "asksHost";
-    private static final String P_ASKS_HTTP_PATH   = CapabilityVocabulary.NAMESPACE + "asksHttpPath";
-    private static final String P_ASKS_WASM_CALLEE = CapabilityVocabulary.NAMESPACE + "asksWasmCallee";
-    private static final String P_ASKS_RATIONALE   = CapabilityVocabulary.NAMESPACE + "asksRationale";
+    private static final String P_ASKS_INTERFACE   = CapabilityVocabulary.CAP_ASKS_INTERFACE;
+    private static final String P_ASKS_METHOD      = CapabilityVocabulary.CAP_ASKS_METHOD;
+    private static final String P_ASKS_HOST        = CapabilityVocabulary.CAP_ASKS_HOST;
+    private static final String P_ASKS_HTTP_PATH   = CapabilityVocabulary.CAP_ASKS_HTTP_PATH;
+    private static final String P_ASKS_WASM_CALLEE = CapabilityVocabulary.CAP_ASKS_WASM_CALLEE;
+    private static final String P_ASKS_RATIONALE   = CapabilityVocabulary.CAP_ASKS_RATIONALE;
 
     private CapabilityAskParser() {}
 

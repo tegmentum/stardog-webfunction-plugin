@@ -52,6 +52,34 @@ public final class CapabilityVocabulary {
     public static final String CAP_ALLOW_HTTP_PATH   = NAMESPACE + "allowHttpPath";
     public static final String CAP_ALLOW_WASM_CALLEE = NAMESPACE + "allowWasmCallee";
 
+    // Capability-ask wave — parallel cap:asks* predicate family, extension-
+    // declared review surface (see capability-ask.md §4). Distinct from
+    // cap:allow*: ask is diagnostic/UX, grant is authorization. Populated
+    // by CapabilityAskParser from Turtle embedded in the wasm's
+    // `stardog.capability-ask` custom section; inserted by
+    // KernelBackedCapabilityPolicyStore.recordAsk into the dedicated
+    // ask named graph (CAP_ASKS_NAMED_GRAPH) on every extension load.
+    public static final String CAP_ASKS_INTERFACE   = NAMESPACE + "asksInterface";
+    public static final String CAP_ASKS_METHOD      = NAMESPACE + "asksMethod";
+    public static final String CAP_ASKS_HOST        = NAMESPACE + "asksHost";
+    public static final String CAP_ASKS_HTTP_PATH   = NAMESPACE + "asksHttpPath";
+    public static final String CAP_ASKS_WASM_CALLEE = NAMESPACE + "asksWasmCallee";
+    public static final String CAP_ASKS_RATIONALE   = NAMESPACE + "asksRationale";
+    /** Reification predicate linking the extension URL to its ask document. */
+    public static final String CAP_HAS_ASK          = NAMESPACE + "hasAsk";
+    /** RDF class marker on the ask document itself (convenience for filtering). */
+    public static final String CAP_CAPABILITY_ASK   = NAMESPACE + "CapabilityAsk";
+
+    /**
+     * Dedicated named graph for capability-ask triples. Auto-inserts on
+     * every extension load land here, keeping ask triples isolated from
+     * grant triples (which live in the default graph) so admin CONSTRUCT
+     * queries against grants do not accidentally scan asks. Locked in
+     * per capability-ask memo §6 + §13 (URN form: stable, opaque,
+     * plugin-owned, non-dereferenceable-looking).
+     */
+    public static final String CAP_ASKS_NAMED_GRAPH = "urn:stardog:webfunction:capability:asks";
+
     // Interface IRIs — enumerate the 11 known host-callback surfaces from
     // Phase 1's callback wiring so admin tooling has a stable target set.
     public static final String IFACE_GRAPH_CALLBACKS          = NAMESPACE + "GraphCallbacks";

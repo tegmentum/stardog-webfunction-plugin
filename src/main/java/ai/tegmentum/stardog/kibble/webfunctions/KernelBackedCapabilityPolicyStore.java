@@ -140,6 +140,240 @@ public final class KernelBackedCapabilityPolicyStore implements CapabilityPolicy
         }
     }
 
+    // ---- capability-ask wave -------------------------------------------
+
+    /**
+     * Overwrite-then-insert the extension's declared ask under the
+     * dedicated ask named graph. Wrapped in
+     * {@link ShiroUtils#executeAsSuperUser} so the write goes through
+     * regardless of the invoker's Shiro subject — matches the
+     * {@link KernelBackedFuelStateStore#writeRowSparql} pattern.
+     *
+     * <p>Best-effort per {@code capability-ask.md} §6: any write
+     * failure is logged (stderr, same convention the rest of the store
+     * uses on bootstrap paths) and swallowed. The extension load
+     * continues and grant resolution takes over.
+     */
+    @Override
+    public void recordAsk(final URL extensionUrl, final CapabilityAsk ask) {
+        if (extensionUrl == null || ask == null) return;
+        initialize();
+        if (!ready.get()) return;
+        final String subject = "<" + escapeIri(extensionUrl.toString()) + ">";
+        final String askDocIri = "<" + escapeIri(extensionUrl.toString()) + "#ask>";
+        final String graph = "<" + CapabilityVocabulary.CAP_ASKS_NAMED_GRAPH + ">";
+
+        // DELETE anything previously written for this extension in the
+        // ask graph. Two subjects to clean: the extension URL itself
+        // (cap:hasAsk) and the ask document IRI (all cap:asks* triples
+        // rooted there). One WHERE-clause DELETE covers both via a
+        // UNION so a single UPDATE round-trip suffices.
+        final String delete =
+                "DELETE { GRAPH " + graph + " { ?s ?p ?o } } "
+                + "WHERE { GRAPH " + graph + " { "
+                + "{ " + subject + " ?p ?o BIND(" + subject + " AS ?s) } "
+                + "UNION "
+                + "{ " + askDocIri + " ?p ?o BIND(" + askDocIri + " AS ?s) } "
+                + "} }";
+
+        // INSERT DATA — flat triple list, one predicate per axis. Empty
+        // axes contribute nothing. cap:hasAsk links extension → ask
+        // document; cap:CapabilityAsk classifies the document.
+        final StringBuilder insert = new StringBuilder(
+                "INSERT DATA { GRAPH " + graph + " { ");
+        insert.append(subject).append(" <")
+              .append(CapabilityVocabulary.CAP_HAS_ASK)
+              .append("> ").append(askDocIri).append(" . ");
+        insert.append(askDocIri).append(" a <")
+              .append(CapabilityVocabulary.CAP_CAPABILITY_ASK).append("> . ");
+        for (final String iri : ask.asksInterfaces()) {
+            insert.append(askDocIri).append(" <")
+                  .append(CapabilityVocabulary.CAP_ASKS_INTERFACE)
+                  .append("> ");
+            appendIriOrLiteral(insert, iri);
+            insert.append(" . ");
+        }
+        for (final String iri : ask.asksMethods()) {
+            insert.append(askDocIri).append(" <")
+                  .append(CapabilityVocabulary.CAP_ASKS_METHOD)
+                  .append("> ");
+            appendIriOrLiteral(insert, iri);
+            insert.append(" . ");
+        }
+        for (final String host : ask.asksHosts()) {
+            insert.append(askDocIri).append(" <")
+                  .append(CapabilityVocabulary.CAP_ASKS_HOST)
+                  .append("> \"").append(escapeLiteral(host)).append("\" . ");
+        }
+        for (final String path : ask.asksHttpPaths()) {
+            insert.append(askDocIri).append(" <")
+                  .append(CapabilityVocabulary.CAP_ASKS_HTTP_PATH)
+                  .append("> \"").append(escapeLiteral(path)).append("\" . ");
+        }
+        for (final String callee : ask.asksWasmCallees()) {
+            insert.append(askDocIri).append(" <")
+                  .append(CapabilityVocabulary.CAP_ASKS_WASM_CALLEE)
+                  .append("> ");
+            appendIriOrLiteral(insert, callee);
+            insert.append(" . ");
+        }
+        if (ask.rationale().isPresent()) {
+            insert.append(askDocIri).append(" <")
+                  .append(CapabilityVocabulary.CAP_ASKS_RATIONALE)
+                  .append("> \"")
+                  .append(escapeLiteral(ask.rationale().get()))
+                  .append("\" . ");
+        }
+        insert.append("} }");
+
+        try {
+            ShiroUtils.executeAsSuperUser(kernel.getSecurityManager(), () -> {
+                try (DatabaseConnection conn = kernel.getConnection(databaseName, Options.empty())) {
+                    conn.begin(java.util.UUID.randomUUID(), true);
+                    try {
+                        conn.update("", delete, null).execute();
+                        conn.update("", insert.toString(), null).execute();
+                        conn.commit();
+                    } catch (RuntimeException ex) {
+                        try { conn.rollback(); } catch (RuntimeException ignore) {}
+                        throw ex;
+                    }
+                }
+            });
+        } catch (RuntimeException e) {
+            // Best-effort per capability-ask.md §6 — log and proceed.
+            System.err.println("[wf-cap-ask] recordAsk failed for "
+                    + extensionUrl + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Read back the ask previously recorded for {@code extensionUrl}
+     * from the ask named graph. Returns {@link Optional#empty()} when
+     * no ask is on file. Used by admin tooling; the runtime warn-on-
+     * undeclared diagnostic reads the ask off {@link CallbackContext}
+     * (stamped at load time) rather than round-tripping through this
+     * lookup on every dispatch.
+     */
+    @Override
+    public Optional<CapabilityAsk> loadAskFor(final URL extensionUrl) {
+        if (extensionUrl == null) return Optional.empty();
+        initialize();
+        if (!ready.get()) return Optional.empty();
+        try {
+            return readAsk(extensionUrl.toString());
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
+    }
+
+    private Optional<CapabilityAsk> readAsk(final String extensionUri) {
+        final String subject = "<" + escapeIri(extensionUri) + ">";
+        final String askDocIri = "<" + escapeIri(extensionUri) + "#ask>";
+        final String graph = "<" + CapabilityVocabulary.CAP_ASKS_NAMED_GRAPH + ">";
+        final String select =
+                "SELECT ?p ?o WHERE { "
+                + "GRAPH " + graph + " { "
+                + subject + " <" + CapabilityVocabulary.CAP_HAS_ASK + "> " + askDocIri + " . "
+                + askDocIri + " ?p ?o . "
+                + "} }";
+
+        final java.util.Set<String> interfaces  = new java.util.LinkedHashSet<>();
+        final java.util.Set<String> methods     = new java.util.LinkedHashSet<>();
+        final java.util.Set<String> hosts       = new java.util.LinkedHashSet<>();
+        final java.util.Set<String> httpPaths   = new java.util.LinkedHashSet<>();
+        final java.util.Set<String> wasmCallees = new java.util.LinkedHashSet<>();
+        final String[] rationale = new String[]{null};
+        final boolean[] anyRow = new boolean[]{false};
+
+        ShiroUtils.executeAsSuperUser(kernel.getSecurityManager(), () -> {
+            try (DatabaseConnection conn = kernel.getConnection(databaseName, Options.empty());
+                 SelectQueryResult rs = conn.select(select).execute()) {
+                while (rs.hasNext()) {
+                    final BindingSet bs = rs.next();
+                    final Object p = bs.get("p");
+                    final Object o = bs.get("o");
+                    if (p == null || o == null) continue;
+                    anyRow[0] = true;
+                    final String pIri = p.toString();
+                    final String oStr = literalOrIriString(o);
+                    if (CapabilityVocabulary.CAP_ASKS_INTERFACE.equals(pIri)) {
+                        interfaces.add(oStr);
+                    } else if (CapabilityVocabulary.CAP_ASKS_METHOD.equals(pIri)) {
+                        methods.add(oStr);
+                    } else if (CapabilityVocabulary.CAP_ASKS_HOST.equals(pIri)) {
+                        hosts.add(oStr);
+                    } else if (CapabilityVocabulary.CAP_ASKS_HTTP_PATH.equals(pIri)) {
+                        httpPaths.add(oStr);
+                    } else if (CapabilityVocabulary.CAP_ASKS_WASM_CALLEE.equals(pIri)) {
+                        wasmCallees.add(oStr);
+                    } else if (CapabilityVocabulary.CAP_ASKS_RATIONALE.equals(pIri)) {
+                        rationale[0] = oStr;
+                    }
+                }
+            }
+        });
+
+        if (!anyRow[0]) return Optional.empty();
+        return Optional.of(new CapabilityAsk(
+                interfaces, methods, hosts, httpPaths, wasmCallees,
+                Optional.ofNullable(rationale[0])));
+    }
+
+    /**
+     * Format {@code s} as either an IRI (wrapped in {@code <...>}) or a
+     * plain string literal — heuristic based on whether {@code s}
+     * contains a colon before any whitespace, which matches every
+     * scheme URL and vocabulary IRI the ask model ships.
+     */
+    private static void appendIriOrLiteral(final StringBuilder out, final String s) {
+        if (looksLikeIri(s)) {
+            out.append('<').append(escapeIri(s)).append('>');
+        } else {
+            out.append('"').append(escapeLiteral(s)).append('"');
+        }
+    }
+
+    private static boolean looksLikeIri(final String s) {
+        if (s == null || s.isEmpty()) return false;
+        final int colon = s.indexOf(':');
+        if (colon <= 0) return false;
+        // Whitespace before the colon rules out an IRI.
+        for (int i = 0; i < colon; i++) {
+            final char c = s.charAt(i);
+            if (Character.isWhitespace(c)) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Minimal string-literal escape for the inline INSERT DATA payload
+     * — mirrors {@link KernelBackedFuelStateStore#escapeLiteral(String)}'s
+     * shape. Handles backslash, double-quote, and control characters.
+     */
+    static String escapeLiteral(final String s) {
+        final StringBuilder out = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            final char c = s.charAt(i);
+            switch (c) {
+                case '\\': out.append("\\\\"); break;
+                case '"':  out.append("\\\""); break;
+                case '\n': out.append("\\n"); break;
+                case '\r': out.append("\\r"); break;
+                case '\t': out.append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        out.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+            }
+        }
+        return out.toString();
+    }
+
+    // ---- grant-side read path (unchanged) ------------------------------
+
     private PolicyTriples readTriples(final String extensionUri) {
         final String subject = "<" + escapeIri(extensionUri) + ">";
         final String select =

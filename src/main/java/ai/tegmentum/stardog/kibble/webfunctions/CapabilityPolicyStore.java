@@ -42,4 +42,44 @@ public interface CapabilityPolicyStore {
      * no policy data.
      */
     boolean isReady();
+
+    /**
+     * Capability-ask wave — record the extension's declared ask into
+     * the dedicated ask named graph
+     * ({@link CapabilityVocabulary#CAP_ASKS_NAMED_GRAPH}) so the admin
+     * can diff it against grants with a SPARQL query
+     * ({@code capability-ask.md} §7).
+     *
+     * <p>Overwrite semantics: on each call, any prior ask triples keyed
+     * on {@code extensionUrl} in the ask named graph are removed before
+     * the new ones land ({@code capability-ask.md} §13's collision rule
+     * — latest wins). Grants in the default graph are untouched.
+     *
+     * <p>Best-effort: implementations swallow write failures and log
+     * rather than throw. Ask insertion is diagnostic; grant resolution
+     * still runs even when ask writing fails ({@code capability-ask.md}
+     * §6's "cannot write the ask" branch).
+     *
+     * <p>Default implementation is a no-op — in-memory / test fakes get
+     * a working store surface without having to implement the ask path.
+     */
+    default void recordAsk(URL extensionUrl, CapabilityAsk ask) {
+        // No-op default. Kernel-backed implementation overrides.
+    }
+
+    /**
+     * Look up the ask previously recorded for {@code extensionUrl}.
+     * Returns {@link Optional#empty()} when no ask is on file (extension
+     * never loaded, or shipped without a {@code stardog.capability-ask}
+     * custom section). Used by admin tooling and by the warn-on-
+     * undeclared diagnostic in {@link HostCallbacks} when the runtime
+     * needs to check whether a granted dispatch was declared.
+     *
+     * <p>Default implementation returns empty — matches the no-op
+     * {@link #recordAsk} default so a test store that doesn't
+     * participate in ask reporting still satisfies the interface.
+     */
+    default Optional<CapabilityAsk> loadAskFor(URL extensionUrl) {
+        return Optional.empty();
+    }
 }
