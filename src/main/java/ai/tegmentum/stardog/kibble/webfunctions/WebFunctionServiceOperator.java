@@ -110,11 +110,12 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
             // Post-invocation counter increment for each yielded solution
             // (matches memo §4 step 11 "on success"). Prefer the store's
             // real fuel_consumed reading via cbCtx.fuelConsumed(); when the
-            // provider returns -1 (module mode, non-wasmtime), fall back to
-            // the toll counter clamped to at least 1 unit so the counter
-            // still advances for extensions that made no host callbacks.
-            // Only account when a real solution was produced (endOfData
-            // signals streaming complete; skip the tail no-op).
+            // provider returns -1 (non-wasmtime provider without fuel
+            // support), fall back to the toll counter clamped to at least
+            // 1 unit so the counter still advances for extensions that
+            // made no host callbacks. Only account when a real solution
+            // was produced (endOfData signals streaming complete; skip
+            // the tail no-op).
             if (policy != null && s != null) {
                 policy.postInvocation(fuelCtx, cbCtx, Math.max(1L, cbCtx.tollUsed()));
             }
@@ -265,10 +266,12 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
             if(selectQueryResult.hasNext()) {
                 final BindingSet bindingSet = selectQueryResult.next();
                 // Look up bindings positionally against the SelectQueryResult's
-                // declared variables list. Module-mode WASM emits vars named
-                // value_0, value_1, …; component-mode WIT binding-sets can emit
-                // arbitrary names (e.g. from a multi-var component). Falling
-                // back to value_%d keeps compatibility if variables() is empty.
+                // declared variables list. Single-value returns from
+                // extension.call are wrapped under the well-known value_0
+                // name (see WitValueMarshaller#singleTermToSelectQueryResult);
+                // component-mode WIT binding-sets can emit arbitrary names
+                // (e.g. from a multi-var component). Falling back to
+                // value_%d keeps compatibility if variables() is empty.
                 final List<String> queryVars = selectQueryResult.variables();
 
                 IntStream.range(0, results.size()).forEach(i -> {
