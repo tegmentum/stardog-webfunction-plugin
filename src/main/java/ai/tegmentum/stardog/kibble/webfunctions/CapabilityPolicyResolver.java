@@ -191,11 +191,25 @@ public final class CapabilityPolicyResolver {
                 ? HostAllowlist.ALLOW_NONE
                 : new HostAllowlist(new ArrayList<>(triples.allowedHosts()));
 
+        // Phase 5 — fine-grained per-argument allowlists on axes not
+        // covered by the coarser interface / method / host checks. Empty
+        // ⇒ ALLOW_NONE singleton (no restriction), populated ⇒ freshly
+        // constructed from the triples' string sets.
+        final HttpPathAllowlist httpPathAllowlist = triples.allowedHttpPaths().isEmpty()
+                ? HttpPathAllowlist.ALLOW_NONE
+                : new HttpPathAllowlist(new ArrayList<>(triples.allowedHttpPaths()));
+
+        final WasmCalleeAllowlist wasmCalleeAllowlist = triples.allowedWasmCallees().isEmpty()
+                ? WasmCalleeAllowlist.ALLOW_NONE
+                : WasmCalleeAllowlist.of(new ArrayList<>(triples.allowedWasmCallees()));
+
         return new CapabilityGrant(
                 extensionUri,
                 granted,
                 methodPolicies,
                 httpAllowlist,
+                httpPathAllowlist,
+                wasmCalleeAllowlist,
                 invokerPrincipal,
                 CapabilityModel.AMBIENT);
     }

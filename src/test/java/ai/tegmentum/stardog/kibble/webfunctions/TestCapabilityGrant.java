@@ -93,6 +93,60 @@ public class TestCapabilityGrant {
     }
 
     @Test
+    public void phase5AllowlistsDefaultToAllowNoneUnderBackwardCompatCtor() {
+        // Six-arg backward-compat ctor defaults the two Phase 5
+        // allowlists to their ALLOW_NONE singletons — the enforcer
+        // treats those as "no restriction beyond coarser checks", so
+        // existing tests keep working without change.
+        final CapabilityGrant g = new CapabilityGrant(
+                "file:///ext.wasm",
+                Set.of("http-callbacks"),
+                Map.of(),
+                HostAllowlist.ALLOW_NONE,
+                "alice",
+                CapabilityModel.INVOKER_SUBJECT);
+        assertThat(g.httpPathAllowlist()).isSameAs(HttpPathAllowlist.ALLOW_NONE);
+        assertThat(g.httpPathAllowlist().isEmpty()).isTrue();
+        assertThat(g.wasmCalleeAllowlist()).isSameAs(WasmCalleeAllowlist.ALLOW_NONE);
+        assertThat(g.wasmCalleeAllowlist().isEmpty()).isTrue();
+    }
+
+    @Test
+    public void phase5AllowlistsCarriedInCanonicalCtor() {
+        final HttpPathAllowlist paths = new HttpPathAllowlist(
+                java.util.List.of("api.acme.com/public/"));
+        final WasmCalleeAllowlist callees = WasmCalleeAllowlist.of(
+                java.util.List.of("ipfs://QmCallee"));
+        final CapabilityGrant g = new CapabilityGrant(
+                "file:///ext.wasm",
+                Set.of("http-callbacks", "wasm-callbacks"),
+                Map.of(),
+                HostAllowlist.ALLOW_NONE,
+                paths,
+                callees,
+                "alice",
+                CapabilityModel.INVOKER_SUBJECT);
+        assertThat(g.httpPathAllowlist()).isSameAs(paths);
+        assertThat(g.httpPathAllowlist().matches("api.acme.com/public/orders")).isTrue();
+        assertThat(g.wasmCalleeAllowlist()).isSameAs(callees);
+        assertThat(g.wasmCalleeAllowlist().matches("ipfs://QmCallee")).isTrue();
+    }
+
+    @Test
+    public void nullPhase5AllowlistsRejectedInCanonicalCtor() {
+        assertThat(catchThrowable(() -> new CapabilityGrant(
+                "u", Set.of(), Map.of(), HostAllowlist.ALLOW_NONE,
+                null, WasmCalleeAllowlist.ALLOW_NONE,
+                "", CapabilityModel.AMBIENT)))
+                .isInstanceOf(NullPointerException.class);
+        assertThat(catchThrowable(() -> new CapabilityGrant(
+                "u", Set.of(), Map.of(), HostAllowlist.ALLOW_NONE,
+                HttpPathAllowlist.ALLOW_NONE, null,
+                "", CapabilityModel.AMBIENT)))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
     public void constructorDefensiveCopyOfInterfaceSet() {
         final Map<String, MethodPolicy> mutable = new LinkedHashMap<>();
         mutable.put("graph-callbacks", MethodPolicy.allowAll("graph-callbacks"));

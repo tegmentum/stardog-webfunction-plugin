@@ -53,6 +53,51 @@ public class TestPolicyTriples {
                 .isInstanceOf(NullPointerException.class);
         assertThat(catchThrowable(() -> new PolicyTriples(Set.of(), Set.of(), null)))
                 .isInstanceOf(NullPointerException.class);
+        // Phase 5 axes — canonical five-arg ctor.
+        assertThat(catchThrowable(() -> new PolicyTriples(
+                Set.of(), Set.of(), Set.of(), null, Set.of())))
+                .isInstanceOf(NullPointerException.class);
+        assertThat(catchThrowable(() -> new PolicyTriples(
+                Set.of(), Set.of(), Set.of(), Set.of(), null)))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    public void phase5AxesCarriedInCanonicalCtor() {
+        final PolicyTriples t = new PolicyTriples(
+                Set.of("http-callbacks", "wasm-callbacks"),
+                Set.of(),
+                Set.of("api.acme.com"),
+                Set.of("api.acme.com/public/"),
+                Set.of("ipfs://QmCallee", "https://reg.example.org/p.wasm"));
+        assertThat(t.allowedHttpPaths()).containsExactly("api.acme.com/public/");
+        assertThat(t.allowedWasmCallees()).containsExactlyInAnyOrder(
+                "ipfs://QmCallee", "https://reg.example.org/p.wasm");
+        assertThat(t.isEmpty()).isFalse();
+    }
+
+    @Test
+    public void isEmptyIncludesPhase5Axes() {
+        // A row with only a wasm-callee (no interface / method / host)
+        // is still not the empty snapshot — the resolver treats it as
+        // "known extension with a tight scope".
+        assertThat(new PolicyTriples(
+                Set.of(), Set.of(), Set.of(),
+                Set.of("host/path/"), Set.of()).isEmpty()).isFalse();
+        assertThat(new PolicyTriples(
+                Set.of(), Set.of(), Set.of(),
+                Set.of(), Set.of("ipfs://QmX")).isEmpty()).isFalse();
+    }
+
+    @Test
+    public void backwardCompatCtorDefaultsPhase5AxesEmpty() {
+        // Three-arg convenience ctor — Phase 5 axes empty (unrestricted).
+        final PolicyTriples t = new PolicyTriples(
+                Set.of("http-callbacks"),
+                Set.of(),
+                Set.of("api.acme.com"));
+        assertThat(t.allowedHttpPaths()).isEmpty();
+        assertThat(t.allowedWasmCallees()).isEmpty();
     }
 
     @Test
