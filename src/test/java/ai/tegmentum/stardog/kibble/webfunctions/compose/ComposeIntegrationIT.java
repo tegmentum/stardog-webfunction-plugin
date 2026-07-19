@@ -69,6 +69,11 @@ import static org.junit.Assume.assumeTrue;
  * {@code src/main/resources/webfunctions/compose_orchestrator.wasm} —
  * see {@code chore(compose): bundle compose orchestrator wasm as plugin
  * resource} in the C-wave commit trail.
+ *
+ * <p>Suite wiring: {@code pom.xml}'s failsafe {@code <include>**&#47;*IT.java</include>}
+ * pattern (line 366) picks this class up automatically — no
+ * {@code @SuiteClasses} edit needed on the sibling {@code WasmTestSuiteIT}
+ * (which is a single-class {@code @Test} runner, not a suite router).
  */
 public class ComposeIntegrationIT {
 
