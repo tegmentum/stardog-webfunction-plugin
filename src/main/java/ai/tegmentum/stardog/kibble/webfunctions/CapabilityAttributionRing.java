@@ -55,7 +55,29 @@ public final class CapabilityAttributionRing {
     private final AtomicBoolean enabled = new AtomicBoolean(true);
     private final AtomicInteger capacity = new AtomicInteger(DEFAULT_CAPACITY);
 
+    /**
+     * Optional durable sink installed at Phase 6 boot. Default
+     * {@link NoopAuditSink#INSTANCE}. Volatile — {@link #setSink}
+     * may run on the KernelModule install thread while {@link #append}
+     * runs on request-path threads.
+     */
+    private volatile AuditSink sink = NoopAuditSink.INSTANCE;
+
     private CapabilityAttributionRing() {}
+
+    /**
+     * Install the Phase 6 durable audit sink. Pass
+     * {@link NoopAuditSink#INSTANCE} to disable. Every subsequent
+     * {@link #append} both records in the in-memory ring AND forwards
+     * to the sink; the sink's own {@code write} is expected to be
+     * non-blocking (the ring's append runs on the request path).
+     */
+    public void setSink(final AuditSink newSink) {
+        this.sink = (newSink == null) ? NoopAuditSink.INSTANCE : newSink;
+    }
+
+    /** Currently installed sink — introspection for tests. */
+    public AuditSink sink() { return sink; }
 
     /**
      * Flip the master gate. When {@code false}, {@link #append} is a

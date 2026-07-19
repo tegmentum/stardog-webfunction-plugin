@@ -9,6 +9,11 @@ import com.complexible.stardog.security.SecurityResourceTypes;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import com.google.inject.multibindings.Multibinder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.nio.file.Path;
 
 public final class WebFunctionServiceModule extends AbstractStardogModule {
     @Override
@@ -42,6 +47,13 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
         // Kernel-install time. Mirrors FuelPolicyStarter's shape; the
         // starter no-ops when the master gate is off.
         kernelModules.addBinding().to(CapabilityPolicyStarter.class);
+        // Phase 6 — durable disk backing for the two attribution rings.
+        // No-op when `webfunctions.audit.disk.enabled=false` (the default);
+        // in-memory ring behavior is untouched. When enabled, opens one
+        // rotating-file NDJSON sink per ring under the configured
+        // directory and installs a JVM shutdown hook so pending rows
+        // drain to disk on plugin shutdown.
+        kernelModules.addBinding().to(AuditSinkStarter.class);
     }
 
     /**
@@ -123,6 +135,86 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
 
             CapabilityEnforcer.install(CapabilityEnforcer.create());
             CapabilityEnforcer.setEnabled(true);
+        }
+    }
+
+    /**
+     * Kernel-install-time bootstrap for the Phase 6 audit disk backing.
+     * Constructs one {@link NdjsonRotatingFileAuditSink} per ring type
+     * (fuel, capability) rooted under
+     * {@link WebFunctionConfig#auditDiskDirectory()}, wires each into
+     * the singleton ring, and registers a JVM shutdown hook that closes
+     * both sinks so any queued rows drain to disk on shutdown.
+     *
+     * <p>No-op when {@link WebFunctionConfig#auditDiskEnabled()} is false
+     * (the default). Existing in-memory ring behavior is fully preserved
+     * — the rings continue to snapshot() from memory; the sink is an
+     * additive write target, not a replacement.
+     *
+     * <p>On sink construction failure (bad directory, permission denied)
+     * the starter logs a warning and falls back to the noop sink for
+     * that ring — the plugin still boots and in-memory ring behavior
+     * still functions.
+     */
+    static final class AuditSinkStarter implements KernelModule {
+
+        private static final Logger LOG = LoggerFactory.getLogger(AuditSinkStarter.class);
+
+        @Inject
+        AuditSinkStarter() {}
+
+        @Override
+        public void install(final Kernel theKernel) throws StardogException {
+            if (!WebFunctionConfig.auditDiskEnabled()) return;
+
+            final Path dir = Path.of(WebFunctionConfig.auditDiskDirectory());
+            final long rotateBytes    = WebFunctionConfig.auditDiskRotateBytes();
+            final int maxFiles        = WebFunctionConfig.auditDiskMaxFiles();
+            final int queueCapacity   = WebFunctionConfig.auditDiskQueueCapacity();
+            final NdjsonRotatingFileAuditSink.FsyncPolicy fsync
+                    = WebFunctionConfig.auditDiskFsyncPolicy();
+            final boolean gzip        = WebFunctionConfig.auditDiskGzipRotated();
+
+            final AuditSink fuelSink = openSinkOrNoop(
+                    new NdjsonRotatingFileAuditSink.Config(
+                            dir, "audit-fuel", rotateBytes, maxFiles,
+                            queueCapacity, fsync, gzip),
+                    "audit-fuel");
+            final AuditSink capSink = openSinkOrNoop(
+                    new NdjsonRotatingFileAuditSink.Config(
+                            dir, "audit-capability", rotateBytes, maxFiles,
+                            queueCapacity, fsync, gzip),
+                    "audit-capability");
+
+            AttributionRing.INSTANCE.setSink(fuelSink);
+            CapabilityAttributionRing.INSTANCE.setSink(capSink);
+
+            // JVM shutdown hook drains both sinks. The KernelModule
+            // interface doesn't have a shutdown callback in Stardog 12,
+            // so the JVM hook is the only sink-agnostic drain point.
+            // Both sinks' close() are idempotent so a manual close from
+            // a test tear-down doesn't collide with the hook.
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                try { fuelSink.close(); } catch (RuntimeException e) {
+                    LOG.warn("Audit sink close (fuel) failed: {}", e.toString());
+                }
+                try { capSink.close(); } catch (RuntimeException e) {
+                    LOG.warn("Audit sink close (capability) failed: {}", e.toString());
+                }
+            }, "webfunctions-audit-shutdown"));
+        }
+
+        private static AuditSink openSinkOrNoop(
+                final NdjsonRotatingFileAuditSink.Config config,
+                final String label) {
+            try {
+                return new NdjsonRotatingFileAuditSink(config);
+            } catch (IOException ioe) {
+                LOG.warn("Audit sink open failed for {} in {}: {} — "
+                                + "falling back to noop sink (in-memory ring still active)",
+                        label, config.directory, ioe.toString());
+                return NoopAuditSink.INSTANCE;
+            }
         }
     }
 }

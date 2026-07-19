@@ -45,7 +45,29 @@ public final class AttributionRing {
     /** Backing storage — head is the oldest row, tail is the newest. */
     private final Deque<AttributionRow> ring = new ArrayDeque<>();
 
+    /**
+     * Optional durable sink installed at Phase 6 boot. Default
+     * {@link NoopAuditSink#INSTANCE}. Volatile because {@link #setSink}
+     * may run on the KernelModule install thread while {@link #append}
+     * runs on request-path threads — publish must be visible.
+     */
+    private volatile AuditSink sink = NoopAuditSink.INSTANCE;
+
     private AttributionRing() {}
+
+    /**
+     * Install the Phase 6 durable audit sink. Pass
+     * {@link NoopAuditSink#INSTANCE} to disable. Every subsequent
+     * {@link #append} both records in the in-memory ring AND forwards
+     * to the sink; the sink's own {@code write} is expected to be
+     * non-blocking (the ring's append runs on the request path).
+     */
+    public void setSink(final AuditSink newSink) {
+        this.sink = (newSink == null) ? NoopAuditSink.INSTANCE : newSink;
+    }
+
+    /** Currently installed sink — introspection for tests. */
+    public AuditSink sink() { return sink; }
 
     /**
      * Append a row to the ring. No-op when

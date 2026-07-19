@@ -88,6 +88,29 @@ public final class WebFunctionConfig {
     public static final int    DEFAULT_CAPABILITY_AUDIT_CAPACITY         = 100_000;
     public static final String DEFAULT_CAPABILITY_POLICY_STORE_DATABASE  = "system-webfunctions-capability";
 
+    // Phase 6 — durable disk backing for both fuel and capability audit
+    // rings. Shared infrastructure: both rings pipe rows through the same
+    // NdjsonRotatingFileAuditSink shape driven by these keys. Every key
+    // is optional; default state (enabled=false) preserves in-memory-only
+    // ring behavior exactly. See:
+    //   ~/git/stardog-webfunction-wit/docs/design/capability-implementation.md
+    //     §14 Phase 6 (audit disk backing, shared with fuel).
+    //   ~/git/stardog-webfunction-wit/docs/design/fuel-implementation.md
+    //     — attribution-log Phase 6 backing.
+    public static final String PROP_AUDIT_DISK_ENABLED         = "webfunctions.audit.disk.enabled";
+    public static final String PROP_AUDIT_DISK_DIRECTORY       = "webfunctions.audit.disk.directory";
+    public static final String PROP_AUDIT_DISK_ROTATE_BYTES    = "webfunctions.audit.disk.rotate-bytes";
+    public static final String PROP_AUDIT_DISK_MAX_FILES       = "webfunctions.audit.disk.max-files";
+    public static final String PROP_AUDIT_DISK_QUEUE_CAPACITY  = "webfunctions.audit.disk.queue-capacity";
+    public static final String PROP_AUDIT_DISK_FSYNC_POLICY    = "webfunctions.audit.disk.fsync-policy";
+    public static final String PROP_AUDIT_DISK_GZIP_ROTATED    = "webfunctions.audit.disk.gzip-rotated";
+
+    public static final long    DEFAULT_AUDIT_DISK_ROTATE_BYTES   = 100_000_000L; // 100 MB
+    public static final int     DEFAULT_AUDIT_DISK_MAX_FILES      = 10;
+    public static final int     DEFAULT_AUDIT_DISK_QUEUE_CAPACITY = 100_000;
+    public static final String  DEFAULT_AUDIT_DISK_FSYNC_POLICY   = "per-second";
+    public static final boolean DEFAULT_AUDIT_DISK_GZIP_ROTATED   = true;
+
     private WebFunctionConfig() {}
 
     public static String engineProvider() {
@@ -380,6 +403,111 @@ public final class WebFunctionConfig {
         if (raw <= 0L) return DEFAULT_CAPABILITY_AUDIT_CAPACITY;
         if (raw > Integer.MAX_VALUE) return Integer.MAX_VALUE;
         return (int) raw;
+    }
+
+    /**
+     * Master gate for the Phase 6 audit disk backing. Off by default —
+     * when {@code false}, both fuel and capability rings pipe rows
+     * through a {@link NoopAuditSink} and behavior matches pre-Phase-6
+     * exactly (in-memory ring only, no disk I/O, no writer thread).
+     * Opt in by setting to {@code true} to spin up the two rotating-file
+     * sinks at plugin install time.
+     */
+    public static boolean auditDiskEnabled() {
+        final String raw = System.getProperty(PROP_AUDIT_DISK_ENABLED);
+        return raw != null && !raw.isEmpty() && Boolean.parseBoolean(raw.trim());
+    }
+
+    /**
+     * Directory under which the two rotating log files live (one per
+     * ring type: {@code audit-fuel.log*} and {@code audit-capability.log*}).
+     * Default: {@code ${stardog.home}/logs/webfunctions-audit} — leverages
+     * the existing Stardog logging directory convention. Falls back to
+     * {@code ${java.io.tmpdir}/webfunctions-audit} when {@code stardog.home}
+     * is unset (unit tests, embedded direct-instantiation).
+     */
+    public static String auditDiskDirectory() {
+        final String raw = System.getProperty(PROP_AUDIT_DISK_DIRECTORY);
+        if (raw != null && !raw.isEmpty()) return raw.trim();
+        final String home = System.getProperty("stardog.home");
+        if (home != null && !home.isEmpty()) {
+            return home + "/logs/webfunctions-audit";
+        }
+        final String tmp = System.getProperty("java.io.tmpdir", "/tmp");
+        return tmp + "/webfunctions-audit";
+    }
+
+    /**
+     * Byte threshold at which the active file rotates. Default 100 MB —
+     * balances index-line cardinality against compressed-per-file size
+     * for downstream ELK ingestion. Values ≤ 0 fall back to the default.
+     */
+    public static long auditDiskRotateBytes() {
+        final long raw = getLong(PROP_AUDIT_DISK_ROTATE_BYTES).orElse(DEFAULT_AUDIT_DISK_ROTATE_BYTES);
+        return raw <= 0 ? DEFAULT_AUDIT_DISK_ROTATE_BYTES : raw;
+    }
+
+    /**
+     * Maximum number of log files retained per ring — the active file
+     * plus up to {@code maxFiles - 1} rotated (possibly gzipped) files.
+     * Default 10. Retention beyond rotation is an operator concern —
+     * rm the oldest rotated files as needed.
+     */
+    public static int auditDiskMaxFiles() {
+        final long raw = getLong(PROP_AUDIT_DISK_MAX_FILES).orElse((long) DEFAULT_AUDIT_DISK_MAX_FILES);
+        if (raw < 1L) return DEFAULT_AUDIT_DISK_MAX_FILES;
+        if (raw > Integer.MAX_VALUE) return Integer.MAX_VALUE;
+        return (int) raw;
+    }
+
+    /**
+     * Bounded queue capacity between the ring's append hot path and the
+     * sink's writer thread. Default 100_000 rows — sized so a 10-second
+     * burst at 10k rows/second lands entirely in the queue without the
+     * drop-oldest path activating. Overflow drops the oldest queued row
+     * (not the request-path row about to be enqueued) so recent rows
+     * are preserved.
+     */
+    public static int auditDiskQueueCapacity() {
+        final long raw = getLong(PROP_AUDIT_DISK_QUEUE_CAPACITY).orElse((long) DEFAULT_AUDIT_DISK_QUEUE_CAPACITY);
+        if (raw < 1L) return DEFAULT_AUDIT_DISK_QUEUE_CAPACITY;
+        if (raw > Integer.MAX_VALUE) return Integer.MAX_VALUE;
+        return (int) raw;
+    }
+
+    /**
+     * Durability policy for the active file. Values (case-insensitive):
+     * {@code per-row} (fsync after every row — strongest, slow),
+     * {@code per-second} (default — scheduled 1s fsync, matches other
+     * observability tools' cadence), {@code never} (OS page cache only —
+     * fastest, lossy on crash).
+     */
+    public static NdjsonRotatingFileAuditSink.FsyncPolicy auditDiskFsyncPolicy() {
+        final String raw = System.getProperty(PROP_AUDIT_DISK_FSYNC_POLICY);
+        final String value = raw == null || raw.isEmpty()
+                ? DEFAULT_AUDIT_DISK_FSYNC_POLICY : raw.trim().toLowerCase();
+        switch (value) {
+            case "per-row":    return NdjsonRotatingFileAuditSink.FsyncPolicy.PER_ROW;
+            case "per-second": return NdjsonRotatingFileAuditSink.FsyncPolicy.PER_SECOND;
+            case "never":      return NdjsonRotatingFileAuditSink.FsyncPolicy.NEVER;
+            default:
+                throw new IllegalArgumentException(
+                        PROP_AUDIT_DISK_FSYNC_POLICY
+                                + " must be 'per-row', 'per-second', or 'never' (was: '"
+                                + raw + "')");
+        }
+    }
+
+    /**
+     * Whether rotated files (only the {@code .N} slots, never the active
+     * file) get compressed via gzip. Default {@code true} — cuts disk
+     * footprint by ~10x on NDJSON. Set {@code false} for filesystems
+     * where operators want to grep rotated files directly.
+     */
+    public static boolean auditDiskGzipRotated() {
+        final String raw = System.getProperty(PROP_AUDIT_DISK_GZIP_ROTATED);
+        if (raw == null || raw.isEmpty()) return DEFAULT_AUDIT_DISK_GZIP_ROTATED;
+        return Boolean.parseBoolean(raw.trim());
     }
 
     private static OptionalLong getLong(final String key) {
