@@ -271,14 +271,8 @@ public class StardogWasmInstance implements Closeable {
                 final Optional<CapabilityEnforcer> enforcer = CapabilityEnforcer.activePolicy();
                 final CapabilityGrant grant;
                 if (enforcer.isPresent()) {
-                    final ExtensionManifest manifest = loadManifestForCapability(wasmUrl);
                     final CallbackContext preCtx = CallbackContext.current();
-                    final FuelContext fuelCtx = preCtx == null
-                            ? FuelContext.extract(wasmUrl.toString())
-                            : new FuelContext(FuelContext.extract(wasmUrl.toString()).userId(),
-                                              "",
-                                              wasmUrl.toString());
-                    grant = enforcer.get().preInvocation(fuelCtx, cached, manifest);
+                    grant = enforcer.get().preInvocation(cached, wasmUrl);
                     if (preCtx != null) preCtx.setCapabilityGrant(grant);
                 } else {
                     grant = null;

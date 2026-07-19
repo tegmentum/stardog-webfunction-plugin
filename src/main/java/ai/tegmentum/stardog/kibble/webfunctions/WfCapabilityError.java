@@ -36,7 +36,9 @@ import com.complexible.stardog.StardogException;
 public abstract sealed class WfCapabilityError extends StardogException
         permits WfCapabilityError.LoadTimeDenied,
                 WfCapabilityError.PerCallDenied,
-                WfCapabilityError.ManifestMalformed {
+                WfCapabilityError.ManifestMalformed,
+                WfCapabilityError.PolicyStoreUnavailable,
+                WfCapabilityError.UnknownExtension {
 
     private final String errorCode;
     private final String jsonPayload;
@@ -275,6 +277,118 @@ public abstract sealed class WfCapabilityError extends StardogException
                     + "\"error_code\":\"WF_CAPABILITY_MANIFEST_MALFORMED\","
                     + "\"extension\":\"" + jsonEscape(nonNull(extensionUri)) + "\","
                     + "\"parse_error\":\"" + jsonEscape(nonNull(parseError)) + "\""
+                    + "}";
+        }
+    }
+
+    /**
+     * {@code WF_CAPABILITY_POLICY_STORE_UNAVAILABLE} — the capability
+     * policy store did not answer. Fires when the store is not installed
+     * (plugin bootstrap incomplete), when its Kernel-backed database
+     * bootstrap failed, or when a transient read failure returned an
+     * empty snapshot the resolver can't distinguish from
+     * "unknown-extension policy" without knowing the store's ready state.
+     *
+     * <p>Deployment-actionable — the operator needs to bring the
+     * {@code system-webfunctions-capability} database up.
+     *
+     * <p>JSON payload schema:
+     * <pre>
+     * {
+     *   "error_code": "WF_CAPABILITY_POLICY_STORE_UNAVAILABLE",
+     *   "extension": "&lt;wasm URI&gt;",
+     *   "detail": "&lt;short human-readable diagnostic&gt;"
+     * }
+     * </pre>
+     */
+    public static final class PolicyStoreUnavailable extends WfCapabilityError {
+
+        private final String extensionUri;
+        private final String detail;
+
+        public PolicyStoreUnavailable(final String extensionUri, final String detail) {
+            super("WF_CAPABILITY_POLICY_STORE_UNAVAILABLE",
+                  humanMessage(extensionUri, detail),
+                  jsonOf(extensionUri, detail));
+            this.extensionUri = nonNull(extensionUri);
+            this.detail       = nonNull(detail);
+        }
+
+        public String extensionUri() { return extensionUri; }
+        public String detail()       { return detail; }
+
+        private static String humanMessage(final String extensionUri, final String detail) {
+            return "Capability policy store unavailable while resolving '"
+                    + nonNull(extensionUri) + "': " + nonNull(detail)
+                    + ". Ensure the system-webfunctions-capability database is up.";
+        }
+
+        private static String jsonOf(final String extensionUri, final String detail) {
+            return "{"
+                    + "\"error_code\":\"WF_CAPABILITY_POLICY_STORE_UNAVAILABLE\","
+                    + "\"extension\":\"" + jsonEscape(nonNull(extensionUri)) + "\","
+                    + "\"detail\":\"" + jsonEscape(nonNull(detail)) + "\""
+                    + "}";
+        }
+    }
+
+    /**
+     * {@code WF_CAPABILITY_UNKNOWN_EXTENSION} — the policy store is up but
+     * has no policy triples for the extension URL, and the configured
+     * {@code webfunctions.capability.unknown-extension-policy} is
+     * {@code deny}. Admin-actionable — the operator adds policy triples
+     * for the extension or flips the unknown-extension policy to permit /
+     * inherit.
+     *
+     * <p>JSON payload schema:
+     * <pre>
+     * {
+     *   "error_code": "WF_CAPABILITY_UNKNOWN_EXTENSION",
+     *   "extension": "&lt;wasm URI&gt;",
+     *   "invoker": "&lt;shiro principal or ''&gt;",
+     *   "policy_source": "&lt;e.g. unknown-extension-policy=deny&gt;"
+     * }
+     * </pre>
+     */
+    public static final class UnknownExtension extends WfCapabilityError {
+
+        private final String extensionUri;
+        private final String invoker;
+        private final String policySource;
+
+        public UnknownExtension(final String extensionUri,
+                                final String invoker,
+                                final String policySource) {
+            super("WF_CAPABILITY_UNKNOWN_EXTENSION",
+                  humanMessage(extensionUri, policySource),
+                  jsonOf(extensionUri, invoker, policySource));
+            this.extensionUri = nonNull(extensionUri);
+            this.invoker      = nonNull(invoker);
+            this.policySource = nonNull(policySource);
+        }
+
+        public String extensionUri() { return extensionUri; }
+        public String invoker()      { return invoker; }
+        public String policySource() { return policySource; }
+
+        private static String humanMessage(final String extensionUri,
+                                           final String policySource) {
+            return "Extension '" + nonNull(extensionUri)
+                    + "' has no capability policy in the store (source: "
+                    + nonNull(policySource) + "). Add policy triples to the"
+                    + " system-webfunctions-capability database, or flip"
+                    + " webfunctions.capability.unknown-extension-policy to"
+                    + " permit/inherit.";
+        }
+
+        private static String jsonOf(final String extensionUri,
+                                     final String invoker,
+                                     final String policySource) {
+            return "{"
+                    + "\"error_code\":\"WF_CAPABILITY_UNKNOWN_EXTENSION\","
+                    + "\"extension\":\"" + jsonEscape(nonNull(extensionUri)) + "\","
+                    + "\"invoker\":\"" + jsonEscape(nonNull(invoker)) + "\","
+                    + "\"policy_source\":\"" + jsonEscape(nonNull(policySource)) + "\""
                     + "}";
         }
     }

@@ -8,6 +8,7 @@ import org.apache.shiro.authz.AuthorizationException;
 import org.apache.shiro.authz.permission.WildcardPermission;
 import org.apache.shiro.subject.Subject;
 
+import java.net.URL;
 import java.util.Optional;
 
 /**
@@ -17,11 +18,13 @@ import java.util.Optional;
  *
  * <p>Two entry points:
  * <ul>
- *   <li>{@link #preInvocation(FuelContext, Component, ExtensionManifest)}
- *       — instantiation-time. Delegates to
+ *   <li>{@link #preInvocation(Component, URL)} —
+ *       instantiation-time. Delegates to
  *       {@link CapabilityPolicyResolver#resolve} and writes a single
  *       {@code GRANTED} row (or leaves the throw path to the resolver's
- *       {@link WfCapabilityError.LoadTimeDenied}).</li>
+ *       {@link WfCapabilityError.LoadTimeDenied} /
+ *       {@link WfCapabilityError.UnknownExtension} /
+ *       {@link WfCapabilityError.PolicyStoreUnavailable}).</li>
  *   <li>{@link #perCallback(CallbackContext, CapabilityGrant, String, String, String)}
  *       — per host-callback dispatch. Runs three checks in order (method
  *       policy, HTTP host allowlist, Shiro permission) and writes an
@@ -100,13 +103,11 @@ public final class CapabilityEnforcer {
      *         {@code CallbackContext} for the hot-path enforcement to
      *         consume.
      */
-    public CapabilityGrant preInvocation(final FuelContext fuelCtx,
-                                         final Component component,
-                                         final ExtensionManifest manifest) {
+    public CapabilityGrant preInvocation(final Component component,
+                                         final URL extensionUrl) {
         final Subject subject = currentSubjectOrNull();
-        final String extensionUri = fuelCtx == null ? "" : fuelCtx.extensionUri();
         final CapabilityGrant grant = CapabilityPolicyResolver.resolve(
-                extensionUri, component, manifest, subject);
+                extensionUrl, component, subject);
         CapabilityAttributionRing.recordGranted(
                 grant.invokerPrincipal(),
                 grant.extensionUri(),

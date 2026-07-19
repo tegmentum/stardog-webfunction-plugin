@@ -117,9 +117,11 @@ public class TestWfCapabilityError {
         final WfCapabilityError err = new WfCapabilityError.PerCallDenied(
                 "u", "i", "m", "a", "r", "s");
         final String tag = switch (err) {
-            case WfCapabilityError.LoadTimeDenied ignored     -> "load";
-            case WfCapabilityError.PerCallDenied ignored      -> "call";
-            case WfCapabilityError.ManifestMalformed ignored  -> "malformed";
+            case WfCapabilityError.LoadTimeDenied ignored          -> "load";
+            case WfCapabilityError.PerCallDenied ignored           -> "call";
+            case WfCapabilityError.ManifestMalformed ignored       -> "malformed";
+            case WfCapabilityError.PolicyStoreUnavailable ignored  -> "store-down";
+            case WfCapabilityError.UnknownExtension ignored        -> "unknown";
         };
         assertThat(tag).isEqualTo("call");
     }

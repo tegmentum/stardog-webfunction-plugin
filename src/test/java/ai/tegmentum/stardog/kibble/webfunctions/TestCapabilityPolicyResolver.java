@@ -5,123 +5,141 @@ import ai.tegmentum.webassembly4j.api.ComponentInstance;
 import ai.tegmentum.webassembly4j.api.LinkingContext;
 import org.apache.shiro.subject.Subject;
 import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import java.lang.reflect.Proxy;
+import java.net.URL;
 import java.util.List;
-import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * Capability wave Phase 1d — grant resolver.
+ * Capability refactor R3 — grant resolver refactored to consume a
+ * {@link CapabilityPolicyStore} instead of an {@link ExtensionManifest}.
  *
  * <p>Covers the algorithm on {@link CapabilityPolicyResolver}: happy
- * path, required-denied path, all three anonymous policies, and the
- * fully-qualified WIT path stripping helper.
- *
- * <p>Uses {@link Proxy} to fake the Shiro {@link Subject} interface —
- * we only need {@code getPrincipal()} out of Subject's 30-plus methods,
- * and no Mockito dep sits in this repo's test scope.
+ * path, unknown-extension policy branches (deny/permit/inherit), all
+ * three anonymous policies, the fully-qualified WIT path stripping
+ * helper, and the "policy store not installed" surface.
  */
 public class TestCapabilityPolicyResolver {
 
-    private static final String EXT_URI = "file:///ext.wasm";
+    private static final URL EXT_URL = url("file:///ext.wasm");
+    private static final String EXT_URI = EXT_URL.toString();
+
+    @Before
+    public void installStubStore() {
+        CapabilityPolicyResolver.setPolicyStore(new StubStore());
+    }
 
     @After
-    public void resetAnonymousPolicy() {
+    public void reset() {
+        CapabilityPolicyResolver.setPolicyStore(null);
         CapabilityPolicyResolver.setAnonymousPolicy(
                 CapabilityPolicyResolver.DEFAULT_ANONYMOUS_POLICY);
+        CapabilityPolicyResolver.setUnknownExtensionPolicy(
+                CapabilityPolicyResolver.DEFAULT_UNKNOWN_EXTENSION_POLICY);
     }
 
     @Test
-    public void happyPathGrantEqualsManifestRequestWhenComponentDeclares() {
-        final ExtensionManifest manifest = new ExtensionManifest(
-                "ext", "1.0.0", "",
-                Set.of("graph-callbacks"),
-                Set.of("http-callbacks"),
-                Map.of("graph-callbacks",
-                        MethodPolicy.allowOnly("graph-callbacks", Set.of("execute-query"))),
-                new HostAllowlist(List.of("api.acme.com")),
-                CapabilityModel.INVOKER_SUBJECT);
+    public void happyPathGrantEqualsStoreAllowsWhenComponentDeclares() {
+        stubStore().set(new PolicyTriples(
+                Set.of("graph-callbacks", "http-callbacks"),
+                Set.of("graph-callbacks/execute-query"),
+                Set.of("api.acme.com")));
         final Component component = fakeComponent(List.of(
                 "tegmentum:webfunction/graph-callbacks@0.1.0",
                 "tegmentum:webfunction/http-callbacks@0.1.0",
-                // Extra declared import the manifest doesn't request — it
-                // must not leak into the grant.
+                // Declared but not policy-allowed — must not leak into grant.
                 "tegmentum:webfunction/fulltext-callbacks@0.1.0"));
         final Subject subject = fakeSubject("alice");
 
         final CapabilityGrant g = CapabilityPolicyResolver.resolve(
-                EXT_URI, component, manifest, subject);
+                EXT_URL, component, subject);
 
         assertThat(g.extensionUri()).isEqualTo(EXT_URI);
         assertThat(g.grantedInterfaces())
-                .containsExactly("graph-callbacks", "http-callbacks");
-        // Extra fulltext-callbacks import stays out — not requested.
+                .containsExactlyInAnyOrder("graph-callbacks", "http-callbacks");
         assertThat(g.allowsInterface("fulltext-callbacks")).isFalse();
         assertThat(g.methodPolicies()).containsKey("graph-callbacks");
+        assertThat(g.methodPolicies().get("graph-callbacks").allows("execute-query")).isTrue();
+        assertThat(g.methodPolicies().get("graph-callbacks").allows("execute-update")).isFalse();
+        assertThat(g.httpAllowlist().matches("api.acme.com")).isTrue();
         assertThat(g.invokerPrincipal()).isEqualTo("alice");
-        assertThat(g.model()).isEqualTo(CapabilityModel.INVOKER_SUBJECT);
     }
 
     @Test
-    public void requiredInterfaceMissingFromComponentThrowsLoadTimeDenied() {
-        final ExtensionManifest manifest = new ExtensionManifest(
-                "ext", "1.0.0", "",
-                Set.of("graph-callbacks"),   // required
+    public void policyAllowsInterfaceNotDeclaredByComponentDropsIt() {
+        // Store trusts graph-callbacks but component doesn't import it.
+        // Intersection produces an empty grant — no throw (no "required"
+        // concept anymore; the store just names what's allowed).
+        stubStore().set(new PolicyTriples(
+                Set.of("graph-callbacks"),
                 Set.of(),
-                Map.of(),
-                HostAllowlist.ALLOW_NONE,
-                CapabilityModel.AMBIENT);
-        // Component doesn't declare graph-callbacks.
+                Set.of()));
         final Component component = fakeComponent(List.of(
                 "tegmentum:webfunction/http-callbacks@0.1.0"));
 
-        final Throwable thrown = catchThrowable(() -> CapabilityPolicyResolver.resolve(
-                EXT_URI, component, manifest, fakeSubject("alice")));
-        assertThat(thrown).isInstanceOf(WfCapabilityError.LoadTimeDenied.class);
-        final WfCapabilityError.LoadTimeDenied err = (WfCapabilityError.LoadTimeDenied) thrown;
-        assertThat(err.missingInterface()).isEqualTo("graph-callbacks");
-        assertThat(err.invoker()).isEqualTo("alice");
-        assertThat(err.policySource()).contains("component");
+        final CapabilityGrant g = CapabilityPolicyResolver.resolve(
+                EXT_URL, component, fakeSubject("alice"));
+        assertThat(g.grantedInterfaces()).isEmpty();
     }
 
     @Test
-    public void optionalInterfaceMissingDoesNotFail() {
-        // Required present but optional absent — must not throw.
-        final ExtensionManifest manifest = new ExtensionManifest(
-                "ext", "1.0.0", "",
-                Set.of("graph-callbacks"),
-                Set.of("http-callbacks"),   // optional, not declared
-                Map.of(),
-                HostAllowlist.ALLOW_NONE,
-                CapabilityModel.AMBIENT);
+    public void unknownExtensionDenyThrowsUnknownExtensionError() {
+        stubStore().set(PolicyTriples.EMPTY);
+        CapabilityPolicyResolver.setUnknownExtensionPolicy(
+                CapabilityPolicyResolver.UnknownExtensionPolicy.DENY);
+
+        final Throwable thrown = catchThrowable(() -> CapabilityPolicyResolver.resolve(
+                EXT_URL, fakeComponent(List.of()), fakeSubject("alice")));
+        assertThat(thrown).isInstanceOf(WfCapabilityError.UnknownExtension.class);
+        final WfCapabilityError.UnknownExtension err = (WfCapabilityError.UnknownExtension) thrown;
+        assertThat(err.invoker()).isEqualTo("alice");
+        assertThat(err.policySource()).contains("deny");
+    }
+
+    @Test
+    public void unknownExtensionPermitTreatsAsPreCapability() {
+        stubStore().set(PolicyTriples.EMPTY);
+        CapabilityPolicyResolver.setUnknownExtensionPolicy(
+                CapabilityPolicyResolver.UnknownExtensionPolicy.PERMIT);
+
         final Component component = fakeComponent(List.of(
                 "tegmentum:webfunction/graph-callbacks@0.1.0"));
-
         final CapabilityGrant g = CapabilityPolicyResolver.resolve(
-                EXT_URI, component, manifest, fakeSubject("alice"));
-        assertThat(g.grantedInterfaces()).containsExactly("graph-callbacks");
-        assertThat(g.allowsInterface("http-callbacks")).isFalse();
+                EXT_URL, component, fakeSubject("alice"));
+        // Under permit, the intersection with the extension's declared
+        // imports lets graph-callbacks through even without an explicit
+        // store row.
+        assertThat(g.grantedInterfaces()).contains("graph-callbacks");
+    }
+
+    @Test
+    public void unknownExtensionInheritTreatsAsPreCapability() {
+        stubStore().set(PolicyTriples.EMPTY);
+        CapabilityPolicyResolver.setUnknownExtensionPolicy(
+                CapabilityPolicyResolver.UnknownExtensionPolicy.INHERIT);
+
+        final Component component = fakeComponent(List.of(
+                "tegmentum:webfunction/http-callbacks@0.1.0"));
+        final CapabilityGrant g = CapabilityPolicyResolver.resolve(
+                EXT_URL, component, fakeSubject("alice"));
+        assertThat(g.grantedInterfaces()).contains("http-callbacks");
     }
 
     @Test
     public void anonymousDenyPolicyThrowsWhenSubjectAbsent() {
         CapabilityPolicyResolver.setAnonymousPolicy(
                 CapabilityPolicyResolver.AnonymousPolicy.DENY);
-        final ExtensionManifest manifest = new ExtensionManifest(
-                "ext", "1.0.0", "",
-                Set.of("graph-callbacks"),
-                Set.of(),
-                Map.of(),
-                HostAllowlist.ALLOW_NONE,
-                CapabilityModel.AMBIENT);
 
         final Throwable thrown = catchThrowable(() -> CapabilityPolicyResolver.resolve(
-                EXT_URI, null, manifest, null));
+                EXT_URL, null, null));
         assertThat(thrown).isInstanceOf(WfCapabilityError.LoadTimeDenied.class);
         final WfCapabilityError.LoadTimeDenied err = (WfCapabilityError.LoadTimeDenied) thrown;
         assertThat(err.resolutionStage()).isEqualTo("shiro");
@@ -130,71 +148,51 @@ public class TestCapabilityPolicyResolver {
     }
 
     @Test
-    public void anonymousPermitPolicyGrantsRequestedInterfaces() {
+    public void anonymousPermitPolicyGrantsPolicyAllowedInterfaces() {
         CapabilityPolicyResolver.setAnonymousPolicy(
                 CapabilityPolicyResolver.AnonymousPolicy.PERMIT);
-        final ExtensionManifest manifest = new ExtensionManifest(
-                "ext", "1.0.0", "",
-                Set.of("graph-callbacks"),
-                Set.of(),
-                Map.of(),
-                HostAllowlist.ALLOW_NONE,
-                CapabilityModel.AMBIENT);
+        stubStore().set(new PolicyTriples(
+                Set.of("graph-callbacks"), Set.of(), Set.of()));
 
-        // Null component signals "test path — skip declared-imports gate";
-        // the resolver trusts the manifest.
         final CapabilityGrant g = CapabilityPolicyResolver.resolve(
-                EXT_URI, null, manifest, null);
+                EXT_URL, null, null);
         assertThat(g.grantedInterfaces()).containsExactly("graph-callbacks");
         assertThat(g.invokerPrincipal()).isEmpty();
     }
 
     @Test
-    public void anonymousInheritPolicyGrantsRequestedInterfaces() {
+    public void anonymousInheritPolicyGrantsPolicyAllowedInterfaces() {
         CapabilityPolicyResolver.setAnonymousPolicy(
                 CapabilityPolicyResolver.AnonymousPolicy.INHERIT);
-        final ExtensionManifest manifest = new ExtensionManifest(
-                "ext", "1.0.0", "",
-                Set.of("graph-callbacks"),
-                Set.of(),
-                Map.of(),
-                HostAllowlist.ALLOW_NONE,
-                CapabilityModel.AMBIENT);
+        stubStore().set(new PolicyTriples(
+                Set.of("graph-callbacks"), Set.of(), Set.of()));
 
         final CapabilityGrant g = CapabilityPolicyResolver.resolve(
-                EXT_URI, null, manifest, null);
+                EXT_URL, null, null);
         assertThat(g.grantedInterfaces()).containsExactly("graph-callbacks");
     }
 
     @Test
-    public void nullManifestFailsCleanly() {
+    public void missingPolicyStoreSurfacesAsPolicyStoreUnavailable() {
+        CapabilityPolicyResolver.setPolicyStore(null);
+
         final Throwable thrown = catchThrowable(() -> CapabilityPolicyResolver.resolve(
-                EXT_URI, null, null, fakeSubject("alice")));
-        assertThat(thrown).isInstanceOf(WfCapabilityError.LoadTimeDenied.class);
-        assertThat(((WfCapabilityError.LoadTimeDenied) thrown).policySource())
-                .contains("manifest-required");
+                EXT_URL, null, fakeSubject("alice")));
+        assertThat(thrown).isInstanceOf(WfCapabilityError.PolicyStoreUnavailable.class);
+        assertThat(((WfCapabilityError.PolicyStoreUnavailable) thrown).extensionUri())
+                .isEqualTo(EXT_URI);
     }
 
     @Test
-    public void methodPoliciesForDeniedInterfacesAreDropped() {
-        // Manifest declares a method policy for an interface the
-        // component doesn't import — the grant must not carry a policy
-        // for an interface it also doesn't grant.
-        final ExtensionManifest manifest = new ExtensionManifest(
-                "ext", "1.0.0", "",
-                Set.of(),
-                Set.of("graph-callbacks", "http-callbacks"),   // both optional
-                Map.of("graph-callbacks",
-                        MethodPolicy.allowOnly("graph-callbacks", Set.of("execute-query"))),
-                HostAllowlist.ALLOW_NONE,
-                CapabilityModel.AMBIENT);
-        final Component component = fakeComponent(List.of(
-                "tegmentum:webfunction/http-callbacks@0.1.0"));   // only http
+    public void notReadyPolicyStoreSurfacesAsPolicyStoreUnavailable() {
+        CapabilityPolicyResolver.setPolicyStore(new CapabilityPolicyStore() {
+            @Override public Optional<PolicyTriples> resolveFor(URL u) { return Optional.empty(); }
+            @Override public boolean isReady() { return false; }
+        });
 
-        final CapabilityGrant g = CapabilityPolicyResolver.resolve(
-                EXT_URI, component, manifest, fakeSubject("alice"));
-        assertThat(g.grantedInterfaces()).containsExactly("http-callbacks");
-        assertThat(g.methodPolicies()).doesNotContainKey("graph-callbacks");
+        final Throwable thrown = catchThrowable(() -> CapabilityPolicyResolver.resolve(
+                EXT_URL, null, fakeSubject("alice")));
+        assertThat(thrown).isInstanceOf(WfCapabilityError.PolicyStoreUnavailable.class);
     }
 
     @Test
@@ -223,9 +221,36 @@ public class TestCapabilityPolicyResolver {
                 .isEqualTo(CapabilityPolicyResolver.DEFAULT_ANONYMOUS_POLICY);
     }
 
-    // Minimal Component stub that only supports the importedInterfaces()
-    // method the resolver reads. Other methods throw so any accidental
-    // consumer surfaces loudly.
+    @Test
+    public void setUnknownExtensionPolicyNullRestoresDefault() {
+        CapabilityPolicyResolver.setUnknownExtensionPolicy(
+                CapabilityPolicyResolver.UnknownExtensionPolicy.PERMIT);
+        assertThat(CapabilityPolicyResolver.unknownExtensionPolicy())
+                .isEqualTo(CapabilityPolicyResolver.UnknownExtensionPolicy.PERMIT);
+        CapabilityPolicyResolver.setUnknownExtensionPolicy(null);
+        assertThat(CapabilityPolicyResolver.unknownExtensionPolicy())
+                .isEqualTo(CapabilityPolicyResolver.DEFAULT_UNKNOWN_EXTENSION_POLICY);
+    }
+
+    // ------------------------------------------------------------
+    // Test doubles.
+    // ------------------------------------------------------------
+
+    private StubStore stubStore() {
+        return (StubStore) CapabilityPolicyResolver.policyStore().orElseThrow();
+    }
+
+    /** Set-once-then-read stub — every resolve consults the same value. */
+    private static final class StubStore implements CapabilityPolicyStore {
+        private final AtomicReference<PolicyTriples> current =
+                new AtomicReference<>(PolicyTriples.EMPTY);
+        void set(final PolicyTriples t) { current.set(t); }
+        @Override public Optional<PolicyTriples> resolveFor(URL u) {
+            return Optional.of(current.get());
+        }
+        @Override public boolean isReady() { return true; }
+    }
+
     private static Component fakeComponent(final List<String> paths) {
         return new Component() {
             @Override public List<String> importedInterfaces() { return paths; }
@@ -237,12 +262,6 @@ public class TestCapabilityPolicyResolver {
         };
     }
 
-    /**
-     * Java-Proxy Subject stub covering just {@code getPrincipal()}.
-     * Every other method returns a JDK default (null / false / 0) — the
-     * resolver only reads the principal, so any other consumer surfaces
-     * as a null the caller can spot.
-     */
     private static Subject fakeSubject(final String principal) {
         return (Subject) Proxy.newProxyInstance(
                 Subject.class.getClassLoader(),
@@ -254,5 +273,13 @@ public class TestCapabilityPolicyResolver {
                     if (method.getReturnType() == long.class) return 0L;
                     return null;
                 });
+    }
+
+    private static URL url(final String s) {
+        try {
+            return new URL(s);
+        } catch (java.net.MalformedURLException e) {
+            throw new IllegalArgumentException(e);
+        }
     }
 }
