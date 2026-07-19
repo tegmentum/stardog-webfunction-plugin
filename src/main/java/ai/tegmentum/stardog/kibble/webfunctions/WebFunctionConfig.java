@@ -50,6 +50,15 @@ public final class WebFunctionConfig {
     public static final long DEFAULT_FUEL_PER_INVOCATION_MAX  = 100_000L;
     public static final long DEFAULT_FUEL_HOST_CALLBACK_TOLL  = 1_000L;
 
+    // Fuel-metering Phase 1 — in-memory attribution ring. Opt-in even when
+    // fuel is enabled: a Phase 1 deployment that only wants typed error
+    // mapping (no diagnostic buffer) leaves this off. Disk-backed audit
+    // trail (Phase 6) will land as a separate `attribution-log.path` key.
+    public static final String PROP_ATTRIBUTION_LOG_ENABLED   = "webfunctions.fuel.attribution-log.enabled";
+    public static final String PROP_ATTRIBUTION_LOG_CAPACITY  = "webfunctions.fuel.attribution-log.capacity";
+
+    public static final int DEFAULT_ATTRIBUTION_LOG_CAPACITY  = 10_000;
+
     public enum EngineMode { MODULE, COMPONENT }
 
     private WebFunctionConfig() {}
@@ -204,6 +213,30 @@ public final class WebFunctionConfig {
      */
     public static long fuelHostCallbackToll() {
         return getLong(PROP_FUEL_HOST_CALLBACK_TOLL).orElse(DEFAULT_FUEL_HOST_CALLBACK_TOLL);
+    }
+
+    /**
+     * Master flag for the in-memory attribution ring (Phase 1 diagnostic).
+     * Off by default so a Phase 1 deployment that only wants typed error
+     * mapping can opt out of the ring's cost — the append is a no-op when
+     * this returns {@code false}. Disk-backed audit trail lands under a
+     * separate {@code webfunctions.fuel.attribution-log.path} key in Phase 6.
+     */
+    public static boolean attributionLogEnabled() {
+        final String raw = System.getProperty(PROP_ATTRIBUTION_LOG_ENABLED);
+        return raw != null && !raw.isEmpty() && Boolean.parseBoolean(raw.trim());
+    }
+
+    /**
+     * Bounded ring capacity — most recent N invocations retained; older rows
+     * evicted FIFO. Default 10 000 rows. Read on each append so live-tuning
+     * via {@link System#setProperty} takes effect without JVM restart.
+     */
+    public static int attributionLogCapacity() {
+        final long raw = getLong(PROP_ATTRIBUTION_LOG_CAPACITY).orElse(DEFAULT_ATTRIBUTION_LOG_CAPACITY);
+        if (raw <= 0L) return DEFAULT_ATTRIBUTION_LOG_CAPACITY;
+        if (raw > Integer.MAX_VALUE) return Integer.MAX_VALUE;
+        return (int) raw;
     }
 
     private static OptionalLong getLong(final String key) {
