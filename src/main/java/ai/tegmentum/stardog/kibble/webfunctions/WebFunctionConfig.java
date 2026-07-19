@@ -71,6 +71,22 @@ public final class WebFunctionConfig {
     public static final long   DEFAULT_FUEL_STATE_FLUSH_INTERVAL = 60_000L;   // 60s — mirrors QueryLog UPDATE_INTERVAL
     public static final String DEFAULT_FUEL_STATE_DATABASE_NAME  = "system-webfunctions-fuel";
 
+    // Capability-policy Phase 1 keys. Every key is optional and defaults
+    // keep the plugin behaviorally identical to pre-capability deployments
+    // (webfunctions.capability.enabled=false disables all Phase 1 work).
+    // See:
+    //   ~/git/stardog-webfunction-wit/docs/design/capability-policy.md
+    //   ~/git/stardog-webfunction-wit/docs/design/capability-implementation.md
+    //     §5 (resolver flow), §7 (enforcer flow), §8 (permission strings),
+    //     §12 (default policy — DENY anonymous, audit enabled).
+    public static final String PROP_CAPABILITY_ENABLED           = "webfunctions.capability.enabled";
+    public static final String PROP_CAPABILITY_REQUIRE_MANIFEST  = "webfunctions.capability.require-manifest";
+    public static final String PROP_CAPABILITY_ANONYMOUS_POLICY  = "webfunctions.capability.anonymous-policy";
+    public static final String PROP_CAPABILITY_AUDIT_ENABLED     = "webfunctions.capability.audit.enabled";
+    public static final String PROP_CAPABILITY_AUDIT_CAPACITY    = "webfunctions.capability.audit.capacity";
+
+    public static final int DEFAULT_CAPABILITY_AUDIT_CAPACITY    = 100_000;
+
     public enum EngineMode { MODULE, COMPONENT }
 
     private WebFunctionConfig() {}
@@ -281,6 +297,78 @@ public final class WebFunctionConfig {
     public static String fuelStateDatabaseName() {
         final String raw = System.getProperty(PROP_FUEL_STATE_DATABASE_NAME);
         return raw == null || raw.isEmpty() ? DEFAULT_FUEL_STATE_DATABASE_NAME : raw.trim();
+    }
+
+    /**
+     * Master gate for capability-policy Phase 1. Off by default so existing
+     * deployments continue unchanged. When enabled,
+     * {@link CapabilityEnforcer#preInvocation} resolves the effective grant at
+     * component instantiation and {@link CapabilityEnforcer#perCallback}
+     * checks every host-callback dispatch. See capability-implementation.md §12.
+     */
+    public static boolean isCapabilityEnabled() {
+        final String raw = System.getProperty(PROP_CAPABILITY_ENABLED);
+        return raw != null && !raw.isEmpty() && Boolean.parseBoolean(raw.trim());
+    }
+
+    /**
+     * Whether a missing sidecar manifest should fail extension instantiation.
+     * Default {@code true} — a Phase 1 deployment with capability enabled
+     * expects every extension to ship its declared capability contract.
+     * When {@code false} the loader falls back to {@link ExtensionManifest#ABSENT}
+     * so unsigned back-compat extensions load without a sidecar.
+     */
+    public static boolean isRequireManifest() {
+        final String raw = System.getProperty(PROP_CAPABILITY_REQUIRE_MANIFEST);
+        if (raw == null || raw.isEmpty()) return true;
+        return Boolean.parseBoolean(raw.trim());
+    }
+
+    /**
+     * Behavior when the invocation happens without an authenticated Shiro
+     * subject (unit tests, embedded direct-instantiation, misconfigured
+     * server). {@code deny} is the prod default per implementation memo §12.
+     * Values: {@code deny}, {@code permit}, {@code inherit}.
+     */
+    public static CapabilityPolicyResolver.AnonymousPolicy getAnonymousPolicy() {
+        final String raw = System.getProperty(PROP_CAPABILITY_ANONYMOUS_POLICY);
+        if (raw == null || raw.isEmpty()) {
+            return CapabilityPolicyResolver.DEFAULT_ANONYMOUS_POLICY;
+        }
+        switch (raw.trim().toLowerCase()) {
+            case "deny":    return CapabilityPolicyResolver.AnonymousPolicy.DENY;
+            case "permit":  return CapabilityPolicyResolver.AnonymousPolicy.PERMIT;
+            case "inherit": return CapabilityPolicyResolver.AnonymousPolicy.INHERIT;
+            default:
+                throw new IllegalArgumentException(
+                        PROP_CAPABILITY_ANONYMOUS_POLICY
+                                + " must be 'deny', 'permit', or 'inherit' (was: '"
+                                + raw + "')");
+        }
+    }
+
+    /**
+     * Master gate for the capability audit ring. Default on per
+     * implementation memo §12 — capability audit is load-bearing for the
+     * security story, opposite of the fuel-attribution ring default.
+     */
+    public static boolean isAuditEnabled() {
+        final String raw = System.getProperty(PROP_CAPABILITY_AUDIT_ENABLED);
+        if (raw == null || raw.isEmpty()) return true;
+        return Boolean.parseBoolean(raw.trim());
+    }
+
+    /**
+     * Bounded capacity of the capability audit ring. Default 100_000 rows
+     * per implementation memo §12 — capability rows land per host-callback
+     * dispatch, one order of magnitude denser than fuel-attribution rows
+     * which land per invocation.
+     */
+    public static int getAuditCapacity() {
+        final long raw = getLong(PROP_CAPABILITY_AUDIT_CAPACITY).orElse(DEFAULT_CAPABILITY_AUDIT_CAPACITY);
+        if (raw <= 0L) return DEFAULT_CAPABILITY_AUDIT_CAPACITY;
+        if (raw > Integer.MAX_VALUE) return Integer.MAX_VALUE;
+        return (int) raw;
     }
 
     private static OptionalLong getLong(final String key) {
