@@ -60,8 +60,8 @@ import static org.junit.Assume.assumeTrue;
  *
  * <p>Container role: the container is the RDF landing surface for
  * {@code sys:compose/rdf#plan-to-turtle} output (IE2) and the extension
- * host for the composed CID (IE3, IE4). Compose bytes flow test-JVM →
- * container via {@code CONTAINER.copyFileToContainer}.
+ * host for the composed artifact URL (IE3, IE4). Compose bytes flow
+ * test-JVM → container via {@code CONTAINER.copyFileToContainer}.
  *
  * <p>Skipped unless Docker + STARDOG_LICENSE_PATH + the shaded plugin
  * JAR + the fixture input wasm are all present. The bundled orchestrator
@@ -147,8 +147,8 @@ public class ComposeIntegrationIT {
                 .withPluginJar(PLUGIN_JAR)
                 // Capability master gate on — IE3 wants to exercise the
                 // grant → resolver → enforcer → dispatch chain against
-                // the composed CID's mounted URL. IE1/IE2/IE5 don't need
-                // it but the gate being on is harmless for them.
+                // the composed artifact's mounted URL. IE1/IE2/IE5 don't
+                // need it but the gate being on is harmless for them.
                 .withSystemProperty(WebFunctionConfig.PROP_CAPABILITY_ENABLED, "true")
                 .withSystemProperty(WebFunctionConfig.PROP_CAPABILITY_UNKNOWN_EXTENSION_POLICY, "deny")
                 .withSystemProperty(WebFunctionConfig.PROP_CAPABILITY_ANONYMOUS_POLICY, "permit");
@@ -172,9 +172,9 @@ public class ComposeIntegrationIT {
         CLIENT = new ComposeOrchestratorClient(ORCHESTRATOR);
         ARTIFACT_STORE = ComposedArtifactStore.forLoader(LOADER);
         // Wire the sha256:// URL handler globally so tests can round-trip
-        // composed CIDs through URL.openConnection() if they want to. The
-        // container's plugin JVM has its own store; the test JVM's store
-        // resolves through URL only inside this JVM.
+        // composed artifact URLs through URL.openConnection() if they
+        // want to. The container's plugin JVM has its own store; the
+        // test JVM's store resolves through URL only inside this JVM.
         Sha256ArtifactUrlHandler.setStore(ARTIFACT_STORE);
         Sha256ArtifactUrlHandler.install();
 
@@ -223,11 +223,11 @@ public class ComposeIntegrationIT {
         final byte[] composed = CLIENT.composeFromCbor(planCbor);
         assertThat(composed).as("composed wasm bytes").isNotEmpty();
 
-        final String cid = ARTIFACT_STORE.persist(composed);
-        assertThat(cid).startsWith("sha256:");
+        final String artifactUrl = ARTIFACT_STORE.persist(composed);
+        assertThat(artifactUrl).startsWith("sha256://");
 
-        // Assert the on-disk artifact matches the CID's hex portion.
-        final String hex = cid.substring("sha256:".length());
+        // Assert the on-disk artifact matches the URL's hex portion.
+        final String hex = artifactUrl.substring("sha256://".length());
         final Path artifact = ARTIFACT_STORE.artifactsDir().resolve(hex + ".wasm");
         assertThat(Files.exists(artifact))
                 .as("composed artifact must materialize under content-addressed filename")
@@ -238,7 +238,7 @@ public class ComposeIntegrationIT {
 
         // Round-trip through the store's load() surface — same lookup
         // the sha256:// URL handler funnels URL#openConnection through.
-        final Optional<byte[]> readBack = ARTIFACT_STORE.load(cid);
+        final Optional<byte[]> readBack = ARTIFACT_STORE.load(artifactUrl);
         assertThat(readBack).isPresent();
         assertThat(readBack.get()).isEqualTo(composed);
     }
@@ -255,8 +255,8 @@ public class ComposeIntegrationIT {
      * {@code system-webfunctions-capability} DB under
      * {@link ComposePolicyStoreWriter#COMPOSITIONS_NAMED_GRAPH}, then
      * SELECT the plan-anchored triples back out and assert the plan IRI,
-     * a version literal, and a reference to the composed CID are all
-     * visible.
+     * a version literal, and a reference to the composed artifact URL
+     * are all visible.
      *
      * <p>Insert path is via SPARQL UPDATE over HTTP (bypasses the
      * Kernel-backed {@link ComposePolicyStoreWriter}, which needs a live
@@ -277,16 +277,16 @@ public class ComposeIntegrationIT {
         final PlanV1 plan = TestComposePlanFixtures.minimalPlan("uppercase", FIXTURE_WASM_DIGEST);
         final byte[] planCbor = PlanV1Cbor.encode(plan);
 
-        // Compose to obtain a CID we can reference in RDF assertions.
+        // Compose to obtain an artifact URL we can reference in RDF
+        // assertions.
         final byte[] composed = CLIENT.composeFromCbor(planCbor);
         assertThat(composed).isNotEmpty();
-        final String cid;
+        final String artifactUrl;
         try {
-            cid = ARTIFACT_STORE.persist(composed);
+            artifactUrl = ARTIFACT_STORE.persist(composed);
         } catch (java.io.IOException ioe) {
             throw new IllegalStateException("artifact persist failed: " + ioe.getMessage(), ioe);
         }
-        final String cidUrl = "sha256://" + cid.substring("sha256:".length());
 
         // Turtle projection from the orchestrator, keyed on our plan IRI
         // so the DELETE-before-INSERT idempotency contract holds even
@@ -296,29 +296,30 @@ public class ComposeIntegrationIT {
                 .as("planToTurtle must produce a non-empty Turtle document")
                 .isNotBlank();
 
-        // Push into the compositions graph. Also assert the composed CID
-        // via a wf:hasComposedArtifact triple so IE2's assertion set
-        // includes both orchestrator-produced RDF and admin-tracked
-        // composed-artifact anchoring.
-        insertCompositionsTurtle(SERVER_URL, planIri, turtle, cidUrl);
+        // Push into the compositions graph. Also assert the composed
+        // artifact URL via a wf:hasComposedArtifact triple so IE2's
+        // assertion set includes both orchestrator-produced RDF and
+        // admin-tracked composed-artifact anchoring.
+        insertCompositionsTurtle(SERVER_URL, planIri, turtle, artifactUrl);
 
         // Query the compositions graph back out and confirm the plan IRI,
-        // a triple carrying the composed CID URL, and at least one plan
-        // predicate the orchestrator emits are visible.
+        // a triple carrying the composed artifact URL, and at least one
+        // plan predicate the orchestrator emits are visible.
         final List<String[]> rows = readCompositionTriples(SERVER_URL, planIri);
         assertThat(rows)
                 .as("compositions graph should carry orchestrator-emitted plan triples for " + planIri)
                 .isNotEmpty();
         assertThat(rows)
-                .as("composition RDF should reference the composed CID URL")
-                .anyMatch(pv -> cidUrl.equals(pv[1]));
+                .as("composition RDF should reference the composed artifact URL")
+                .anyMatch(pv -> artifactUrl.equals(pv[1]));
     }
 
     // ---- IE3 ------------------------------------------------------------
 
     /**
-     * IE3 — a composed CID loads through the full extension pipeline
-     * and its execution is gated by the plugin's capability enforcer.
+     * IE3 — a composed artifact URL loads through the full extension
+     * pipeline and its execution is gated by the plugin's capability
+     * enforcer.
      *
      * <p>Compose the fixture plan to obtain composed wasm bytes; mount
      * those bytes into the container at
@@ -334,8 +335,8 @@ public class ComposeIntegrationIT {
      * handler resolves against an on-disk artifacts directory it owns,
      * <em>not</em> the test JVM's. Rather than shipping the composed
      * bytes into the container's compose-root and reaching in to
-     * synthesize a CID URL that the container can dereference, we mount
-     * the composed bytes at a stable {@code file://} path — which
+     * synthesize an artifact URL that the container can dereference, we
+     * mount the composed bytes at a stable {@code file://} path — which
      * exercises the same {@code StardogWasmInstance.from(URL)} +
      * capability-enforcer chain as {@code sha256://} loads (both funnel
      * through the same URL#openConnection stream extraction). The C11
@@ -343,7 +344,7 @@ public class ComposeIntegrationIT {
      * dereference contract on its own.
      */
     @Test
-    public void ie3_composedCidLoadsThroughExtensionPipeline() throws Exception {
+    public void ie3_composedArtifactUrlLoadsThroughExtensionPipeline() throws Exception {
         ensurePolicyDb(SERVER_URL);
 
         final PlanV1 plan = TestComposePlanFixtures.minimalPlan("uppercase", FIXTURE_WASM_DIGEST);
@@ -404,14 +405,16 @@ public class ComposeIntegrationIT {
     // ---- IE4 ------------------------------------------------------------
 
     /**
-     * IE4 — content-addressed CIDs preserve distinct compositions.
+     * IE4 — content-addressed artifact URLs preserve distinct
+     * compositions.
      *
      * <p>Compose two plans that differ in a well-observed field
      * (Policy tenant tag), assert:
      * <ul>
-     *   <li>The two composed byte streams produce distinct CIDs — the
-     *       orchestrator's emit surface is <em>content-addressed</em>
-     *       so a plan-level change flows through to a distinct hash.</li>
+     *   <li>The two composed byte streams produce distinct artifact
+     *       URLs — the orchestrator's emit surface is
+     *       <em>content-addressed</em> so a plan-level change flows
+     *       through to a distinct hash.</li>
      *   <li>Both artifacts materialise on disk under their respective
      *       hex filenames — the store's idempotent write path does not
      *       overwrite v1 when v2 lands.</li>
@@ -429,7 +432,7 @@ public class ComposeIntegrationIT {
      * observation into an integration-level round trip.
      */
     @Test
-    public void ie4_contentAddressedCidsPreserveDistinctCompositions() throws Exception {
+    public void ie4_contentAddressedUrlsPreserveDistinctCompositions() throws Exception {
         ensurePolicyDb(SERVER_URL);
 
         final PlanV1 planA = TestComposePlanFixtures.fullerPlan(
@@ -446,18 +449,18 @@ public class ComposeIntegrationIT {
         final byte[] composedA = CLIENT.composeFromCbor(cborA);
         final byte[] composedB = CLIENT.composeFromCbor(cborB);
 
-        final String cidA = ARTIFACT_STORE.persist(composedA);
-        final String cidB = ARTIFACT_STORE.persist(composedB);
-        assertThat(cidA)
-                .as("distinct plans should compose to distinct content-addressed CIDs")
-                .isNotEqualTo(cidB);
+        final String artifactUrlA = ARTIFACT_STORE.persist(composedA);
+        final String artifactUrlB = ARTIFACT_STORE.persist(composedB);
+        assertThat(artifactUrlA)
+                .as("distinct plans should compose to distinct content-addressed URLs")
+                .isNotEqualTo(artifactUrlB);
 
         // Both blobs on disk — the artifact store's persist path does
-        // not overwrite when a second CID lands.
+        // not overwrite when a second artifact URL lands.
         final Path artA = ARTIFACT_STORE.artifactsDir()
-                .resolve(cidA.substring("sha256:".length()) + ".wasm");
+                .resolve(artifactUrlA.substring("sha256://".length()) + ".wasm");
         final Path artB = ARTIFACT_STORE.artifactsDir()
-                .resolve(cidB.substring("sha256:".length()) + ".wasm");
+                .resolve(artifactUrlB.substring("sha256://".length()) + ".wasm");
         assertThat(Files.exists(artA)).isTrue();
         assertThat(Files.exists(artB)).isTrue();
 
@@ -466,27 +469,25 @@ public class ComposeIntegrationIT {
         // windows so neither eviction steps on the other.
         final String iriA = "urn:test:compose-it:plan:ie4:alpha";
         final String iriB = "urn:test:compose-it:plan:ie4:beta";
-        final String cidUrlA = "sha256://" + cidA.substring("sha256:".length());
-        final String cidUrlB = "sha256://" + cidB.substring("sha256:".length());
-        insertCompositionsTurtle(SERVER_URL, iriA, CLIENT.planToTurtleCbor(cborA, iriA), cidUrlA);
-        insertCompositionsTurtle(SERVER_URL, iriB, CLIENT.planToTurtleCbor(cborB, iriB), cidUrlB);
+        insertCompositionsTurtle(SERVER_URL, iriA, CLIENT.planToTurtleCbor(cborA, iriA), artifactUrlA);
+        insertCompositionsTurtle(SERVER_URL, iriB, CLIENT.planToTurtleCbor(cborB, iriB), artifactUrlB);
 
         final List<String[]> rowsA = readCompositionTriples(SERVER_URL, iriA);
         final List<String[]> rowsB = readCompositionTriples(SERVER_URL, iriB);
         assertThat(rowsA).as("plan A triples visible in compositions graph").isNotEmpty();
         assertThat(rowsB).as("plan B triples visible in compositions graph").isNotEmpty();
         assertThat(rowsA)
-                .as("plan A carries the plan-A CID as its composed artifact anchor")
-                .anyMatch(pv -> cidUrlA.equals(pv[1]));
+                .as("plan A carries the plan-A URL as its composed artifact anchor")
+                .anyMatch(pv -> artifactUrlA.equals(pv[1]));
         assertThat(rowsB)
-                .as("plan B carries the plan-B CID as its composed artifact anchor")
-                .anyMatch(pv -> cidUrlB.equals(pv[1]));
+                .as("plan B carries the plan-B URL as its composed artifact anchor")
+                .anyMatch(pv -> artifactUrlB.equals(pv[1]));
         assertThat(rowsA)
-                .as("plan A must NOT surface the plan-B CID URL")
-                .noneMatch(pv -> cidUrlB.equals(pv[1]));
+                .as("plan A must NOT surface the plan-B artifact URL")
+                .noneMatch(pv -> artifactUrlB.equals(pv[1]));
         assertThat(rowsB)
-                .as("plan B must NOT surface the plan-A CID URL")
-                .noneMatch(pv -> cidUrlA.equals(pv[1]));
+                .as("plan B must NOT surface the plan-A artifact URL")
+                .noneMatch(pv -> artifactUrlA.equals(pv[1]));
     }
 
     // ---- IE5 ------------------------------------------------------------
@@ -564,14 +565,14 @@ public class ComposeIntegrationIT {
      * SPARQL UPDATE that (a) DELETEs any prior triples anchored on
      * {@code planIri} in the compositions graph, then (b) INSERTs the
      * orchestrator's Turtle plus a {@code wf:hasComposedArtifact} anchor
-     * triple linking the plan IRI to the composed CID URL. Mirrors the
-     * production writer's DELETE-then-INSERT idempotency shape without
-     * requiring a Kernel reference.
+     * triple linking the plan IRI to the composed artifact URL. Mirrors
+     * the production writer's DELETE-then-INSERT idempotency shape
+     * without requiring a Kernel reference.
      */
     private static void insertCompositionsTurtle(final String serverUrl,
                                                  final String planIri,
                                                  final String turtle,
-                                                 final String cidUrl) {
+                                                 final String artifactUrl) {
         final String graph = ComposePolicyStoreWriter.COMPOSITIONS_NAMED_GRAPH;
         final String hasComposedArtifact =
                 "http://semantalytics.com/2021/03/ns/stardog/webfunction/hasComposedArtifact";
@@ -584,7 +585,7 @@ public class ComposeIntegrationIT {
         final String insertTurtle =
                 "INSERT DATA { GRAPH <" + graph + "> {\n"
                         + turtle
-                        + "\n<" + planIri + "> <" + hasComposedArtifact + "> <" + cidUrl + "> .\n"
+                        + "\n<" + planIri + "> <" + hasComposedArtifact + "> <" + artifactUrl + "> .\n"
                         + "} }";
         try (Connection conn = ConnectionConfiguration.to(
                     POLICY_DB)

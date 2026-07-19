@@ -9,10 +9,11 @@ import java.net.URLStreamHandler;
 import java.net.URLStreamHandlerFactory;
 
 /**
- * {@link URLStreamHandler} for the {@code sha256://<hex>} scheme.
+ * {@link URLStreamHandler} for the {@code sha256://<hex>} URL scheme —
+ * the plugin's default content-addressed URL for composed artifacts.
  *
  * <p>Resolves the URL through a globally-registered
- * {@link ComposedArtifactStore} — so a {@code sha256://abc..}. URL
+ * {@link ComposedArtifactStore} — so a {@code sha256://abc..} URL
  * opened by the standard {@link URL#openConnection()} / stream API
  * flows through the artifact store's on-disk lookup.
  *

@@ -29,8 +29,9 @@ import java.util.Objects;
  * {@code http://semantalytics.com/2021/03/ns/stardog/webfunction/<version>/composePlan}.
  * The SERVICE body carries plan RDF (the {@code comp:CompositionPlan}
  * vocabulary — see {@code libs/compose-rdf}) plus a single
- * {@code wf:cid ?var} output-binding triple naming the SPARQL variable
- * that receives the composed {@code sha256:...} CID.
+ * {@code wf:artifactUrl ?var} output-binding triple naming the SPARQL
+ * variable that receives the composed artifact URL (default
+ * {@code sha256://<hex>}).
  *
  * <p>End-to-end dispatch:
  * <ol>
@@ -38,7 +39,7 @@ import java.util.Objects;
  *       {@link ScanCollector} (SCAN-only body — no joins, unions,
  *       filters).</li>
  *   <li>Partition into plan triples (all constants) and the output
- *       binding (predicate {@code wf:cid}, object a variable).</li>
+ *       binding (predicate {@code wf:artifactUrl}, object a variable).</li>
  *   <li>Serialize the plan triples as Turtle on the Java side.</li>
  *   <li>Ship the Turtle to the orchestrator's
  *       {@code sys:compose/rdf@1.0.0#plan-from-turtle} — get canonical
@@ -46,8 +47,8 @@ import java.util.Objects;
  *   <li>Hand the CBOR to {@link ComposeAdmin#compose(byte[])} — the
  *       plan gets composed, artifact-persisted, and RDF-projected
  *       under the composition named graph.</li>
- *   <li>Bind the CID to the SERVICE's output variable and emit a
- *       single solution row.</li>
+ *   <li>Bind the composed artifact URL to the SERVICE's output variable
+ *       and emit a single solution row.</li>
  * </ol>
  *
  * <p>The Guice binding lives in
@@ -60,11 +61,11 @@ import java.util.Objects;
 public final class WebFunctionComposeService extends SingleQueryService<ServiceQuery> {
 
     /**
-     * Output-binding predicate: {@code wf:cid ?var} in a SERVICE body
-     * marks {@code ?var} as the variable receiving the composed CID.
-     * Only one such triple is permitted per SERVICE clause.
+     * Output-binding predicate: {@code wf:artifactUrl ?var} in a SERVICE
+     * body marks {@code ?var} as the variable receiving the composed
+     * artifact URL. Only one such triple is permitted per SERVICE clause.
      */
-    static final String WF_CID_PREDICATE_LOCAL = "cid";
+    static final String WF_ARTIFACT_URL_PREDICATE_LOCAL = "artifactUrl";
 
     private final Kernel kernel;
     private volatile ComposeAdmin admin;
@@ -112,20 +113,21 @@ public final class WebFunctionComposeService extends SingleQueryService<ServiceQ
             }
             final IRI pred = (IRI) predicate.getValue().value();
 
-            // Output-binding recognition: any wf:cid predicate whose
-            // object is a variable names the SPARQL var receiving the
-            // composed CID. Only the local name is enforced so mutable
-            // + immutable vocab versions both work.
-            if (WF_CID_PREDICATE_LOCAL.equals(pred.localName())
+            // Output-binding recognition: any wf:artifactUrl predicate
+            // whose object is a variable names the SPARQL var receiving
+            // the composed artifact URL. Only the local name is enforced
+            // so mutable + immutable vocab versions both work.
+            if (WF_ARTIFACT_URL_PREDICATE_LOCAL.equals(pred.localName())
                     && pred.namespace().startsWith(
                             "http://semantalytics.com/2021/03/ns/stardog/webfunction/")) {
                 if (!object.isVariable()) {
                     throw new PlanException("SERVICE " + iri
-                            + ": wf:cid object must be a variable (got constant: " + object + ")");
+                            + ": wf:artifactUrl object must be a variable (got constant: "
+                            + object + ")");
                 }
                 if (outputVarId != -1) {
                     throw new PlanException("SERVICE " + iri
-                            + ": multiple wf:cid output bindings; only one is permitted");
+                            + ": multiple wf:artifactUrl output bindings; only one is permitted");
                 }
                 outputVarId = object.getName();
                 continue;
@@ -150,7 +152,8 @@ public final class WebFunctionComposeService extends SingleQueryService<ServiceQ
 
         if (outputVarId == -1) {
             throw new PlanException("SERVICE " + iri
-                    + ": missing wf:cid output binding — add `[] wf:cid ?var .` to the SERVICE body");
+                    + ": missing wf:artifactUrl output binding — "
+                    + "add `[] wf:artifactUrl ?var .` to the SERVICE body");
         }
         if (planTriples.isEmpty()) {
             throw new PlanException("SERVICE " + iri

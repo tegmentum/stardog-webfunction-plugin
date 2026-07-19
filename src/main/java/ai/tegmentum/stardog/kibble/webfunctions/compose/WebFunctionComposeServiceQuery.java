@@ -28,13 +28,13 @@ import static com.stardog.stark.Values.iri;
  * SPARQL SERVICE query for the compose orchestrator's plan-composition
  * path. Extracted at translate time from the SERVICE body: a Turtle
  * document (the plan triples, serialized on the Java side) and the
- * single output variable that receives the composed
- * {@code sha256:...} CID.
+ * single output variable that receives the composed artifact URL
+ * (default {@code sha256://<hex>}).
  *
  * <p>Bound at evaluate-time to the plugin's
  * {@link ComposeAdmin} which runs plan-from-turtle → compose →
  * artifact persist end-to-end; the operator emits a single-row
- * solution with the CID bound. See
+ * solution with the artifact URL bound. See
  * {@link WebFunctionComposeService} for the SERVICE-body parse.
  */
 public final class WebFunctionComposeServiceQuery extends PlanNodeBodyServiceQuery {

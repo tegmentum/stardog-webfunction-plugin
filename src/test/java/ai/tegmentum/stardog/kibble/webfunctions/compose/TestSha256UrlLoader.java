@@ -14,14 +14,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Wave B C11 — verify {@code sha256://<hex>} URLs resolve through the
- * artifact store, so a composed CID rides the standard
+ * artifact store, so a composed artifact URL rides the standard
  * {@link URL#openConnection()} + stream extraction path
  * {@link ai.tegmentum.stardog.kibble.webfunctions.StardogWasmInstance#getWasm(URL)}
  * uses for other extension URLs.
  *
  * <p>Unit-level integration: hand a byte payload to
  * {@link ComposedArtifactStore}, register the store globally, open the
- * resulting CID as a URL, and confirm the read-back matches.
+ * resulting artifact URL, and confirm the read-back matches.
  */
 public class TestSha256UrlLoader {
 
@@ -36,9 +36,8 @@ public class TestSha256UrlLoader {
         Sha256ArtifactUrlHandler.setStore(store);
 
         final byte[] payload = "wasm-bytes-payload".getBytes();
-        final String cid = store.persist(payload);
-        final String hex = cid.substring("sha256:".length());
-        final URL url = new URL("sha256://" + hex);
+        final String artifactUrl = store.persist(payload);
+        final URL url = new URL(artifactUrl);
         try (InputStream in = url.openConnection().getInputStream()) {
             final ByteArrayOutputStream out = new ByteArrayOutputStream();
             final byte[] buf = new byte[128];
@@ -49,7 +48,7 @@ public class TestSha256UrlLoader {
     }
 
     @Test
-    public void openConnectionThrowsForMissingCid() throws Exception {
+    public void openConnectionThrowsForMissingArtifact() throws Exception {
         Sha256ArtifactUrlHandler.install();
         final Path root = tmp.newFolder().toPath();
         final ComposedArtifactStore store = new ComposedArtifactStore(root);

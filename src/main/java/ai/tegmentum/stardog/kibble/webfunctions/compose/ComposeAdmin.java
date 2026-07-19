@@ -17,7 +17,7 @@ import java.util.Optional;
  *       orchestrator wasm's {@code sys:compose/emit#compose} and
  *       {@code sys:compose/rdf#plan-to-turtle} exports.</li>
  *   <li>{@link ComposedArtifactStore} — persists the composed wasm
- *       under its {@code sha256:<hex>} CID.</li>
+ *       under its {@code sha256://<hex>} content-addressed URL.</li>
  *   <li>{@link ComposePolicyStoreWriter} — projects the Turtle from
  *       the orchestrator into the composition named graph in the
  *       plugin's capability database.</li>
@@ -40,23 +40,29 @@ public final class ComposeAdmin {
     private final ComposePolicyStoreWriter policyStoreWriter;
 
     /**
-     * Result of a single admin composition — carries the CID of the
-     * composed wasm, the size in bytes, and the plan IRI the RDF
-     * was inserted under.
+     * Result of a single admin composition — carries the artifact URL
+     * of the composed wasm, the size in bytes, and the plan IRI the
+     * RDF was inserted under.
      */
     public static final class ComposedResult {
-        private final String cid;
+        private final String artifactUrl;
         private final long size;
         private final String planIri;
 
-        public ComposedResult(final String cid, final long size, final String planIri) {
-            this.cid = Objects.requireNonNull(cid, "cid");
+        public ComposedResult(final String artifactUrl, final long size, final String planIri) {
+            this.artifactUrl = Objects.requireNonNull(artifactUrl, "artifactUrl");
             this.size = size;
             this.planIri = planIri;
         }
 
-        /** Canonical CID {@code sha256:<hex>} — usable as an extension URL scheme via {@code sha256://<hex>}. */
-        public String cid() { return cid; }
+        /**
+         * Canonical composed-artifact URL — {@code sha256://<hex>} by
+         * default (the plugin's in-tree content-addressed blob store).
+         * If the operator re-hosts the artifact elsewhere they can
+         * publish a different URL scheme, but the store always mints
+         * one under {@code sha256://}.
+         */
+        public String artifactUrl() { return artifactUrl; }
 
         /** Length of the composed wasm in bytes. */
         public long size() { return size; }
@@ -82,8 +88,8 @@ public final class ComposeAdmin {
         final ComposedArtifactStore store = ComposedArtifactStore.forLoader(loader);
         final ComposePolicyStoreWriter writer = new ComposePolicyStoreWriter(kernel);
         // Register the artifact store with the sha256:// URL handler so
-        // composed CIDs can round-trip through StardogWasmInstance's URL
-        // load path — see C11.
+        // composed artifact URLs can round-trip through
+        // StardogWasmInstance's URL load path — see C11.
         Sha256ArtifactUrlHandler.setStore(store);
         Sha256ArtifactUrlHandler.install();
         return new ComposeAdmin(client, store, writer);
@@ -118,7 +124,7 @@ public final class ComposeAdmin {
 
     /**
      * Compose a plan handed as pre-encoded CBOR. Returns the composed
-     * wasm's CID + size + plan IRI.
+     * wasm's artifact URL + digest + size + plan IRI.
      *
      * @param planCbor canonical CBOR of a {@link PlanV1} (as produced
      *                 by {@link PlanV1Cbor#encode(PlanV1)} or by the
@@ -147,9 +153,9 @@ public final class ComposeAdmin {
     public ComposedResult composeFromCbor(final byte[] planCbor, final String planIri) {
         Objects.requireNonNull(planCbor, "planCbor");
         final byte[] composed = client.composeFromCbor(planCbor);
-        final String cid;
+        final String artifactUrl;
         try {
-            cid = artifactStore.persist(composed);
+            artifactUrl = artifactStore.persist(composed);
         } catch (IOException ioe) {
             throw new ComposeException(null, "artifact store persist failed: " + ioe.getMessage(), ioe);
         }
@@ -157,7 +163,7 @@ public final class ComposeAdmin {
                 ? client.planToTurtleCbor(planCbor)
                 : client.planToTurtleCbor(planCbor, planIri);
         policyStoreWriter.write(turtle.getBytes(java.nio.charset.StandardCharsets.UTF_8), planIri);
-        return new ComposedResult(cid, composed.length,
+        return new ComposedResult(artifactUrl, composed.length,
                 planIri == null ? "urn:composition:plan" : planIri);
     }
 
@@ -179,11 +185,13 @@ public final class ComposeAdmin {
     }
 
     /**
-     * Read back a previously composed artifact by CID. Returns
-     * {@link Optional#empty()} when the CID has no on-disk match.
+     * Read back a previously composed artifact by its URL. Accepts the
+     * canonical {@code sha256://<hex>} URL form and the bare
+     * {@code sha256:<hex>} hash-pair form. Returns {@link Optional#empty()}
+     * when the artifact URL has no on-disk match.
      */
-    public Optional<byte[]> loadArtifact(final String cid) throws IOException {
-        return artifactStore.load(cid);
+    public Optional<byte[]> loadArtifact(final String artifactUrl) throws IOException {
+        return artifactStore.load(artifactUrl);
     }
 
     // Package-visible test hooks.

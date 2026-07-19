@@ -16,8 +16,8 @@ import java.util.Set;
 /**
  * Single-row emit operator for the compose SERVICE. On first
  * {@code computeNext()} runs the compose pipeline end-to-end
- * (turtle → CBOR via the orchestrator client, CBOR → CID via
- * {@link ComposeAdmin#compose(byte[])}), binds the CID to the
+ * (turtle → CBOR via the orchestrator client, CBOR → artifact URL via
+ * {@link ComposeAdmin#compose(byte[])}), binds the artifact URL to the
  * SERVICE's declared output variable, and returns the solution.
  * Subsequent calls return {@code endOfData}.
  */
@@ -42,11 +42,11 @@ public final class WebFunctionComposeServiceOperator extends AbstractOperator
         emitted = true;
         final byte[] cbor = query.client().planFromTurtle(query.turtle());
         final ComposeAdmin.ComposedResult result = query.admin().compose(cbor);
-        final Value cidLiteral = Values.literal(result.cid());
+        final Value artifactUrlLiteral = Values.literal(result.artifactUrl());
         final Solution solution = mExecutionContext.getSolutionFactory()
                 .variables(Sets.newHashSet(query.outputVarId()))
                 .newSolution();
-        solution.setValue(query.outputVarId(), cidLiteral, getMappings());
+        solution.setValue(query.outputVarId(), artifactUrlLiteral, getMappings());
         return solution;
     }
 

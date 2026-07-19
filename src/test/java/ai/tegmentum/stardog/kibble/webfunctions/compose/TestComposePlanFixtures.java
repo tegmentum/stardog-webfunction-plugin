@@ -89,7 +89,8 @@ final class TestComposePlanFixtures {
      * Fuller PlanV1 fixture — same single component, but with a non-empty
      * policy (deterministic + tenant tag). Used for tests that need a
      * plan-shape distinguishable from {@link #minimalPlan} so a repeat
-     * composition of the two produces distinct content-addressed CIDs.
+     * composition of the two produces distinct content-addressed
+     * artifact URLs.
      */
     static PlanV1 fullerPlan(final String rootId, final byte[] componentDigest,
                              final String tenantTag) {
