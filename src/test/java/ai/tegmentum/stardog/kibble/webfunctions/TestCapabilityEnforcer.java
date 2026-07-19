@@ -181,6 +181,174 @@ public class TestCapabilityEnforcer {
     }
 
     @Test
+    public void emptyHostAllowlistNoRestrictionUnderPhase5Semantics() {
+        // Phase 5 semantic change: empty HostAllowlist means "no
+        // restriction beyond coarser interface + method checks".
+        // Before Phase 5, ALLOW_NONE on http-callbacks denied every URL.
+        // After Phase 5, it allows every URL (only NON-EMPTY allowlists
+        // impose restrictions).
+        final CapabilityGrant grant = new CapabilityGrant(
+                "file:///ext.wasm",
+                Set.of("http-callbacks"),
+                Map.of(),
+                HostAllowlist.ALLOW_NONE,          // empty ⇒ no restriction
+                "alice",
+                CapabilityModel.INVOKER_SUBJECT);
+        ThreadContext.bind(alwaysAllowSubject("alice"));
+
+        enforcer.perCallback(null, grant, "http-callbacks", "http-get", "any.host.com");
+
+        final List<CapabilityAuditRow> rows = CapabilityAttributionRing.INSTANCE.snapshot();
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).outcome()).isEqualTo(CapabilityAuditRow.Outcome.GRANTED);
+    }
+
+    @Test
+    public void enforceHttpPathNoOpOnEmptyAllowlist() {
+        // Empty HttpPathAllowlist ⇒ no restriction, no audit row, no throw.
+        final CapabilityGrant grant = new CapabilityGrant(
+                "file:///ext.wasm",
+                Set.of("http-callbacks"),
+                Map.of(),
+                HostAllowlist.ALLOW_NONE,
+                HttpPathAllowlist.ALLOW_NONE,
+                WasmCalleeAllowlist.ALLOW_NONE,
+                "alice",
+                CapabilityModel.INVOKER_SUBJECT);
+        enforcer.enforceHttpPath(grant, "file:///ext.wasm", "http-get",
+                "https://api.evil.com/anything");
+        assertThat(CapabilityAttributionRing.INSTANCE.snapshot()).isEmpty();
+    }
+
+    @Test
+    public void enforceHttpPathAllowsMatchingPrefix() {
+        final CapabilityGrant grant = new CapabilityGrant(
+                "file:///ext.wasm",
+                Set.of("http-callbacks"),
+                Map.of(),
+                HostAllowlist.ALLOW_NONE,
+                new HttpPathAllowlist(List.of("api.acme.com/public/")),
+                WasmCalleeAllowlist.ALLOW_NONE,
+                "alice",
+                CapabilityModel.INVOKER_SUBJECT);
+        enforcer.enforceHttpPath(grant, "file:///ext.wasm", "http-get",
+                "https://api.acme.com/public/orders");
+        assertThat(CapabilityAttributionRing.INSTANCE.snapshot()).isEmpty();
+    }
+
+    @Test
+    public void enforceHttpPathDeniesOnMismatch() {
+        final CapabilityGrant grant = new CapabilityGrant(
+                "file:///ext.wasm",
+                Set.of("http-callbacks"),
+                Map.of(),
+                HostAllowlist.ALLOW_NONE,
+                new HttpPathAllowlist(List.of("api.acme.com/public/")),
+                WasmCalleeAllowlist.ALLOW_NONE,
+                "alice",
+                CapabilityModel.INVOKER_SUBJECT);
+        final Throwable thrown = catchThrowable(() -> enforcer.enforceHttpPath(
+                grant, "file:///ext.wasm", "http-get",
+                "https://api.acme.com/private/secrets"));
+        assertThat(thrown).isInstanceOf(WfCapabilityError.PerCallDenied.class);
+        final WfCapabilityError.PerCallDenied err = (WfCapabilityError.PerCallDenied) thrown;
+        assertThat(err.reason()).isEqualTo(
+                WfCapabilityError.PerCallDenied.REASON_HTTP_PATH_DENIED);
+        assertThat(err.interfaceName()).isEqualTo("http-callbacks");
+        assertThat(err.argumentsSummary()).isEqualTo("api.acme.com/private/secrets");
+
+        final List<CapabilityAuditRow> rows = CapabilityAttributionRing.INSTANCE.snapshot();
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).outcome()).isEqualTo(CapabilityAuditRow.Outcome.DENIED);
+        assertThat(rows.get(0).denyReason()).isEqualTo(
+                WfCapabilityError.PerCallDenied.REASON_HTTP_PATH_DENIED);
+    }
+
+    @Test
+    public void enforceWasmCalleeNoOpOnEmptyAllowlist() {
+        final CapabilityGrant grant = new CapabilityGrant(
+                "file:///ext.wasm",
+                Set.of("wasm-callbacks"),
+                Map.of(),
+                HostAllowlist.ALLOW_NONE,
+                HttpPathAllowlist.ALLOW_NONE,
+                WasmCalleeAllowlist.ALLOW_NONE,
+                "alice",
+                CapabilityModel.INVOKER_SUBJECT);
+        enforcer.enforceWasmCallee(grant, "file:///ext.wasm", "invoke-wasm",
+                "ipfs://QmAnyCallee");
+        assertThat(CapabilityAttributionRing.INSTANCE.snapshot()).isEmpty();
+    }
+
+    @Test
+    public void enforceWasmCalleeAllowsExactMatch() {
+        final CapabilityGrant grant = new CapabilityGrant(
+                "file:///ext.wasm",
+                Set.of("wasm-callbacks"),
+                Map.of(),
+                HostAllowlist.ALLOW_NONE,
+                HttpPathAllowlist.ALLOW_NONE,
+                WasmCalleeAllowlist.of(List.of("ipfs://QmCallee")),
+                "alice",
+                CapabilityModel.INVOKER_SUBJECT);
+        enforcer.enforceWasmCallee(grant, "file:///ext.wasm", "invoke-wasm",
+                "ipfs://QmCallee");
+        assertThat(CapabilityAttributionRing.INSTANCE.snapshot()).isEmpty();
+    }
+
+    @Test
+    public void enforceWasmCalleeDeniesOnMismatch() {
+        final CapabilityGrant grant = new CapabilityGrant(
+                "file:///ext.wasm",
+                Set.of("wasm-callbacks"),
+                Map.of(),
+                HostAllowlist.ALLOW_NONE,
+                HttpPathAllowlist.ALLOW_NONE,
+                WasmCalleeAllowlist.of(List.of("ipfs://QmCallee")),
+                "alice",
+                CapabilityModel.INVOKER_SUBJECT);
+        final Throwable thrown = catchThrowable(() -> enforcer.enforceWasmCallee(
+                grant, "file:///ext.wasm", "invoke-wasm-service",
+                "ipfs://QmEvil"));
+        assertThat(thrown).isInstanceOf(WfCapabilityError.PerCallDenied.class);
+        final WfCapabilityError.PerCallDenied err = (WfCapabilityError.PerCallDenied) thrown;
+        assertThat(err.reason()).isEqualTo(
+                WfCapabilityError.PerCallDenied.REASON_WASM_CALLEE_DENIED);
+        assertThat(err.interfaceName()).isEqualTo("wasm-callbacks");
+        assertThat(err.method()).isEqualTo("invoke-wasm-service");
+        assertThat(err.argumentsSummary()).isEqualTo("ipfs://QmEvil");
+    }
+
+    @Test
+    public void enforcePhase5MethodsNoOpOnNullGrant() {
+        // Defensive path — null grant returns without throwing (matches
+        // enforceCapability's null-ctx guard shape in HostCallbacks).
+        enforcer.enforceHttpPath(null, "file:///ext.wasm", "http-get",
+                "https://api.evil.com/anything");
+        enforcer.enforceWasmCallee(null, "file:///ext.wasm", "invoke-wasm",
+                "ipfs://QmAny");
+        assertThat(CapabilityAttributionRing.INSTANCE.snapshot()).isEmpty();
+    }
+
+    @Test
+    public void hostAndPathFromUrlStripsSchemeAndUserinfo() {
+        assertThat(CapabilityEnforcer.hostAndPathFromUrl(
+                "https://api.acme.com/public/orders"))
+                .isEqualTo("api.acme.com/public/orders");
+        assertThat(CapabilityEnforcer.hostAndPathFromUrl(
+                "http://user:pw@api.acme.com/path"))
+                .isEqualTo("api.acme.com/path");
+        assertThat(CapabilityEnforcer.hostAndPathFromUrl(
+                "https://api.acme.com")).isEqualTo("api.acme.com");
+        assertThat(CapabilityEnforcer.hostAndPathFromUrl("")).isEmpty();
+        assertThat(CapabilityEnforcer.hostAndPathFromUrl(null)).isEmpty();
+        // Unparseable input returns the raw string — the allowlist will
+        // then reject it (no pattern will start with "not a url").
+        assertThat(CapabilityEnforcer.hostAndPathFromUrl("not a url"))
+                .isEqualTo("not a url");
+    }
+
+    @Test
     public void ringBoundsRolloverPreservesRecentRows() {
         // Tight capacity; drive more denials through than fit.
         CapabilityAttributionRing.INSTANCE.setCapacity(3);

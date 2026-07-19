@@ -154,12 +154,17 @@ public final class CapabilityEnforcer {
                     WfCapabilityError.PerCallDenied.REASON_METHOD_DENIED);
         }
 
-        // 2. HTTP host allowlist.
-        if ("http-callbacks".equals(interfaceName)) {
-            if (!grant.httpAllowlist().matches(argsSummary)) {
-                denyAndThrow(invoker, extensionUri, interfaceName, method, argsSummary,
-                        WfCapabilityError.PerCallDenied.REASON_HOST_DENIED);
-            }
+        // 2. HTTP host allowlist. Empty allowlist means "no restriction
+        // beyond the coarser interface + method check" (Phase 5 empty-
+        // means-unrestricted semantics, applied uniformly across the
+        // three per-argument allowlist axes so a policy that grants
+        // cap:allowInterface cap:HttpCallbacks without any cap:allowHost
+        // triples still passes the host check).
+        if ("http-callbacks".equals(interfaceName)
+                && !grant.httpAllowlist().isEmpty()
+                && !grant.httpAllowlist().matches(argsSummary)) {
+            denyAndThrow(invoker, extensionUri, interfaceName, method, argsSummary,
+                    WfCapabilityError.PerCallDenied.REASON_HOST_DENIED);
         }
 
         // 3. Shiro permission — collapse any Shiro/Stardog failure onto
@@ -191,6 +196,87 @@ public final class CapabilityEnforcer {
         // Success — one GRANTED row per dispatch per strategy memo §9.
         CapabilityAttributionRing.recordGranted(
                 invoker, extensionUri, interfaceName, method, argsSummary);
+    }
+
+    /**
+     * Phase 5 — HTTP path-prefix allowlist check. Called by
+     * {@link HostCallbacks#httpGet} / {@link HostCallbacks#httpPostJsonV1}
+     * <em>after</em> {@link #perCallback} has cleared the coarser
+     * interface / method / host axes.
+     *
+     * <p>Empty allowlist ⇒ no restriction (returns without checking).
+     * Non-empty allowlist ⇒ {@code host+path} (URL scheme + userinfo
+     * stripped) must start with any configured pattern; otherwise deny
+     * with {@link WfCapabilityError.PerCallDenied#REASON_HTTP_PATH_DENIED}.
+     *
+     * <p>Same audit-row shape as {@link #perCallback}'s denials: one
+     * {@link CapabilityAuditRow.Outcome#DENIED} row per rejection so
+     * operators can grep the ring for a specific extension's http-path
+     * failures.
+     */
+    public void enforceHttpPath(final CapabilityGrant grant,
+                                final String extensionUri,
+                                final String method,
+                                final String url) {
+        if (grant == null) return;
+        if (grant.httpPathAllowlist().isEmpty()) return;
+        final String hostAndPath = hostAndPathFromUrl(url);
+        if (!grant.httpPathAllowlist().matches(hostAndPath)) {
+            denyAndThrow(grant.invokerPrincipal(), extensionUri,
+                    "http-callbacks", method, hostAndPath,
+                    WfCapabilityError.PerCallDenied.REASON_HTTP_PATH_DENIED);
+        }
+    }
+
+    /**
+     * Phase 5 — wasm callee URL allowlist check. Called by
+     * {@link HostCallbacks#invokeWasm} / {@link HostCallbacks#invokeWasmV1}
+     * / {@link HostCallbacks#invokeWasmService} <em>after</em>
+     * {@link #perCallback} has cleared the coarser interface / method
+     * axes.
+     *
+     * <p>Empty allowlist ⇒ no restriction (returns without checking).
+     * Non-empty allowlist ⇒ callee URL must equal any configured pattern
+     * exactly; otherwise deny with
+     * {@link WfCapabilityError.PerCallDenied#REASON_WASM_CALLEE_DENIED}.
+     *
+     * <p>URL-scheme-agnostic — callee URLs are compared as-is (ipfs://,
+     * https://, file://, ...).
+     */
+    public void enforceWasmCallee(final CapabilityGrant grant,
+                                  final String extensionUri,
+                                  final String method,
+                                  final String calleeUrl) {
+        if (grant == null) return;
+        if (grant.wasmCalleeAllowlist().isEmpty()) return;
+        if (!grant.wasmCalleeAllowlist().matches(calleeUrl)) {
+            denyAndThrow(grant.invokerPrincipal(), extensionUri,
+                    "wasm-callbacks", method, calleeUrl == null ? "" : calleeUrl,
+                    WfCapabilityError.PerCallDenied.REASON_WASM_CALLEE_DENIED);
+        }
+    }
+
+    /**
+     * Extract the {@code host+path} portion from a URL for
+     * {@link HttpPathAllowlist} matching. Strips scheme (e.g.
+     * {@code "https://"}) + optional userinfo / port. Returns the raw
+     * input when the URL fails to parse — the allowlist matcher will
+     * then reject it (no pattern will start with {@code "https://"}).
+     *
+     * <p>Kept package-private so tests can drive parsing edge cases
+     * without going through the full HostCallbacks stack.
+     */
+    static String hostAndPathFromUrl(final String url) {
+        if (url == null || url.isEmpty()) return "";
+        try {
+            final java.net.URI uri = java.net.URI.create(url);
+            final String host = uri.getHost();
+            final String path = uri.getRawPath();
+            if (host == null) return url;
+            return host + (path == null ? "" : path);
+        } catch (RuntimeException ignore) {
+            return url;
+        }
     }
 
     private static void denyAndThrow(final String invoker,

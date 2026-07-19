@@ -167,10 +167,14 @@ public abstract sealed class WfCapabilityError extends StardogException
     public static final class PerCallDenied extends WfCapabilityError {
 
         /** Stable discriminator tags for {@link #reason()}. */
-        public static final String REASON_METHOD_DENIED     = "method-denied";
-        public static final String REASON_HOST_DENIED       = "host-denied";
-        public static final String REASON_PERMISSION_DENIED = "permission-denied";
-        public static final String REASON_INTERFACE_DENIED  = "interface-denied";
+        public static final String REASON_METHOD_DENIED       = "method-denied";
+        public static final String REASON_HOST_DENIED         = "host-denied";
+        public static final String REASON_PERMISSION_DENIED   = "permission-denied";
+        public static final String REASON_INTERFACE_DENIED    = "interface-denied";
+        /** Phase 5 — HTTP path prefix not in {@link HttpPathAllowlist}. */
+        public static final String REASON_HTTP_PATH_DENIED    = "http-path-denied";
+        /** Phase 5 — wasm callee URL not in {@link WasmCalleeAllowlist}. */
+        public static final String REASON_WASM_CALLEE_DENIED  = "wasm-callee-denied";
 
         private final String extensionUri;
         private final String interfaceName;

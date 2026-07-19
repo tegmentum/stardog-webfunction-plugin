@@ -142,6 +142,48 @@ public final class HostCallbacks {
         }
     }
 
+    /**
+     * Phase 5 — HTTP path prefix allowlist check. Called after
+     * {@link #enforceCapability} has cleared the coarser interface +
+     * method + host axes. No-op when the master gate is off, when no
+     * grant is bound, or when the extension's grant carries an empty
+     * {@link HttpPathAllowlist} (empty ⇒ no restriction).
+     *
+     * <p>Kept package-private so tests can drive the check in isolation
+     * from the wasm dispatch stack.
+     */
+    static void enforceHttpPathCapability(final CallbackContext ctx,
+                                          final String method,
+                                          final String url) {
+        if (ctx == null) return;
+        final Optional<CapabilityEnforcer> enforcer = CapabilityEnforcer.activePolicy();
+        if (enforcer.isEmpty()) return;
+        final CapabilityGrant grant = ctx.capabilityGrant().orElse(null);
+        enforcer.get().enforceHttpPath(grant, ctx.extensionUri(), method, url);
+    }
+
+    /**
+     * Phase 5 — wasm callee URL allowlist check. Called after
+     * {@link #enforceCapability} has cleared the coarser interface +
+     * method axes. No-op when the master gate is off, when no grant is
+     * bound, or when the extension's grant carries an empty
+     * {@link WasmCalleeAllowlist} (empty ⇒ no restriction).
+     *
+     * <p>URL-scheme-agnostic: callee URLs may be ipfs://, https://,
+     * file://, or any URL scheme.
+     *
+     * <p>Kept package-private so tests can drive the check in isolation.
+     */
+    static void enforceWasmCalleeCapability(final CallbackContext ctx,
+                                            final String method,
+                                            final String calleeUrl) {
+        if (ctx == null) return;
+        final Optional<CapabilityEnforcer> enforcer = CapabilityEnforcer.activePolicy();
+        if (enforcer.isEmpty()) return;
+        final CapabilityGrant grant = ctx.capabilityGrant().orElse(null);
+        enforcer.get().enforceWasmCallee(grant, ctx.extensionUri(), method, calleeUrl);
+    }
+
     /** First-N-chars snippet for a SPARQL text argsSummary. */
     private static String snippet(final String s, final int maxChars) {
         if (s == null) return "";
@@ -362,6 +404,7 @@ public final class HostCallbacks {
             final String invokeUrl = args.length > 0
                     ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "wasm-callbacks", "invoke-wasm", invokeUrl);
+            enforceWasmCalleeCapability(ctx, "invoke-wasm", invokeUrl);
             ctx.chargeToll("host.invoke-wasm");
             return executeAsInvoker(ctx, "wasm-callbacks", "invoke-wasm", invokeUrl, () -> {
                 try {
@@ -636,6 +679,7 @@ public final class HostCallbacks {
             final CallbackContext ctx = CallbackContext.current();
             final String getUrl = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "http-callbacks", "http-get", hostnameFromUrl(getUrl));
+            enforceHttpPathCapability(ctx, "http-get", getUrl);
             if (ctx != null) ctx.chargeToll("http-callbacks.http-get");
             try {
                 final String url = ((ComponentVal) args[0]).asString();
@@ -664,6 +708,7 @@ public final class HostCallbacks {
             final CallbackContext ctx = CallbackContext.current();
             final String postUrl = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "http-callbacks", "http-post-json", hostnameFromUrl(postUrl));
+            enforceHttpPathCapability(ctx, "http-post-json", postUrl);
             if (ctx != null) ctx.chargeToll("http-callbacks.http-post-json");
             try {
                 final String url = ((ComponentVal) args[0]).asString();
@@ -770,6 +815,7 @@ public final class HostCallbacks {
             final CallbackContext ctx = CallbackContext.current();
             final String wasmUri = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "wasm-callbacks", "invoke-wasm", wasmUri);
+            enforceWasmCalleeCapability(ctx, "invoke-wasm", wasmUri);
             if (ctx != null) ctx.chargeToll("wasm-callbacks.invoke-wasm");
             return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
                 "invoke-wasm: not implemented on JVM host (MVP stub — full sub-component "
@@ -790,6 +836,7 @@ public final class HostCallbacks {
             final CallbackContext ctx = CallbackContext.current();
             final String wasmSvcUri = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "wasm-callbacks", "invoke-wasm-service", wasmSvcUri);
+            enforceWasmCalleeCapability(ctx, "invoke-wasm-service", wasmSvcUri);
             if (ctx != null) ctx.chargeToll("wasm-callbacks.invoke-wasm-service");
             return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
                 "invoke-wasm-service: not implemented on JVM host (MVP stub — full "
