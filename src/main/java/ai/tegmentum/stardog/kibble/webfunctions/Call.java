@@ -115,17 +115,49 @@ public final class Call extends AbstractExpression implements UserDefinedFunctio
                             // host-callback tolls charge against this frame's
                             // budget and typed error attribution knows which
                             // extension tripped the cap.
+                            final String extensionUri = values[0] == null ? "" : values[0].toString();
                             if (WebFunctionConfig.fuelEnabled()) {
                                 cbCtx.setFuelMeteringContext(
-                                        values[0] == null ? "" : values[0].toString(),
+                                        extensionUri,
                                         WebFunctionConfig.fuelPerInvocationMax(),
                                         WebFunctionConfig.fuelHostCallbackToll());
                             }
+                            // Fuel metering Phase 2 — resolve Shiro identity +
+                            // pre-invocation user-quota check per
+                            // fuel-implementation.md §4 steps 3-6. No-op when
+                            // fuel disabled or per-user quota unset; throws
+                            // WfBudgetError.UserQuotaExhausted on cap hit.
+                            final FuelContext fuelCtx = FuelContext.extract(extensionUri);
+                            final ai.tegmentum.stardog.kibble.webfunctions.UserFuelPolicy policy =
+                                    UserFuelPolicy.activePolicy().orElse(null);
+                            if (policy != null) {
+                                policy.preInvocation(fuelCtx);
+                            }
                             try (StardogWasmInstance stardogWasmInstance = StardogWasmInstance.from(values[0], valueSolution.getDictionary())) {
                                 try(final SelectQueryResult selectQueryResult = stardogWasmInstance.evaluate(Arrays.stream(values).skip(1).toArray(Value[]::new))) {
-                                    return stardogWasmInstance.selectQueryResultToValueOrError(selectQueryResult);
+                                    final ValueOrError result = stardogWasmInstance.selectQueryResultToValueOrError(selectQueryResult);
+                                    // Phase-2 post-invocation counter increment.
+                                    // wasmtime4j does not surface fuelConsumed to
+                                    // component-mode callers today (Phase-1 note in
+                                    // FuelTrapMapper) — attribute host-callback tolls
+                                    // paid so far as a lower-bound "observed" cost,
+                                    // clamped to at least 1 unit so the counter
+                                    // still advances on invocations that made no
+                                    // host callbacks. Real accounting lands when
+                                    // wasmtime4j-provider surfaces the hook.
+                                    if (policy != null) {
+                                        policy.postInvocation(fuelCtx,
+                                                Math.max(1L, cbCtx.tollUsed()));
+                                    }
+                                    return result;
                                 }
                             } catch (IOException | ExecutionException ex) {
+                                // On trap: charge the cap as an upper bound (guest
+                                // necessarily hit the cap to trap).
+                                if (policy != null) {
+                                    policy.postInvocation(fuelCtx,
+                                            WebFunctionConfig.fuelPerInvocationMax());
+                                }
                                 final WfBudgetError typed = FuelTrapMapper.mapOrNull(ex, cbCtx);
                                 if (typed != null) throw typed;
                                 return ValueOrError.Error;
@@ -133,6 +165,10 @@ public final class Call extends AbstractExpression implements UserDefinedFunctio
                                 // Direct throws from CallbackContext.chargeToll
                                 // (WfBudgetError.HostCallbackTollExhausted) land
                                 // here too — same promotion path.
+                                if (policy != null) {
+                                    policy.postInvocation(fuelCtx,
+                                            Math.max(1L, cbCtx.tollUsed()));
+                                }
                                 final WfBudgetError typed = FuelTrapMapper.mapOrNull(ex, cbCtx);
                                 if (typed != null) throw typed;
                                 throw ex;
