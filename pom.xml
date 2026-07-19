@@ -110,37 +110,39 @@
         <dependency>
             <groupId>ai.tegmentum.webassembly4j</groupId>
             <artifactId>webassembly4j-api</artifactId>
-            <version>2.4.1</version>
+            <version>2.4.3</version>
         </dependency>
         <dependency>
             <groupId>ai.tegmentum.webassembly4j</groupId>
             <artifactId>webassembly4j-runtime</artifactId>
-            <version>2.4.1</version>
+            <version>2.4.3</version>
         </dependency>
         <dependency>
             <groupId>ai.tegmentum.webassembly4j</groupId>
             <artifactId>wasmtime4j-provider</artifactId>
-            <version>2.4.1</version>
+            <version>2.4.3</version>
         </dependency>
         <!--
-            wasmtime4j-provider 2.4.1 pulls wasmtime4j 46.0.1-1.4.2 transitively.
-            Force to 1.4.5 to match the jni/native/native-loader releases below;
-            all three ship together as one wasmtime4j release train.
+            wasmtime4j-provider 2.4.3 pulls wasmtime4j 46.0.1-1.4.7 transitively.
+            Explicit-pin the jni/native/native-loader releases so shading picks
+            up the matching train — all three ship together as one wasmtime4j
+            release. 1.4.7 lands the component-mode consumeFuel + fuelConsumed
+            JNI/Java API used by CallbackContext.chargeToll and UserFuelPolicy.
         -->
         <dependency>
             <groupId>ai.tegmentum</groupId>
             <artifactId>wasmtime4j</artifactId>
-            <version>46.0.1-1.4.5</version>
+            <version>46.0.1-1.4.7</version>
         </dependency>
         <dependency>
             <groupId>ai.tegmentum</groupId>
             <artifactId>wasmtime4j-jni</artifactId>
-            <version>46.0.1-1.4.5</version>
+            <version>46.0.1-1.4.7</version>
         </dependency>
         <dependency>
             <groupId>ai.tegmentum</groupId>
             <artifactId>wasmtime4j-native</artifactId>
-            <version>46.0.1-1.4.5</version>
+            <version>46.0.1-1.4.7</version>
         </dependency>
         <!--
             Explicitly pull the linux-x86_64 classifier so the shaded plugin jar
@@ -152,7 +154,7 @@
         <dependency>
             <groupId>ai.tegmentum</groupId>
             <artifactId>wasmtime4j-native</artifactId>
-            <version>46.0.1-1.4.5</version>
+            <version>46.0.1-1.4.7</version>
             <classifier>linux-x86_64</classifier>
         </dependency>
     </dependencies>
