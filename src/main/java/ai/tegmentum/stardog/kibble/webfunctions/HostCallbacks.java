@@ -30,6 +30,56 @@ public final class HostCallbacks {
 
     private HostCallbacks() {}
 
+    /**
+     * Capability-policy Phase 1 — per-callback enforcement gate. Called
+     * as the first thing on every host-callback dispatch (before the
+     * fuel toll), so a denial unwinds through the wasm frame without
+     * side effects. No-op when the master gate is off — {@link
+     * CapabilityEnforcer#activePolicy} returns empty. Also no-op when
+     * there is no bound {@link CallbackContext} (isolated unit-test or
+     * embedded direct-instantiation paths) — those flows have never
+     * been on the capability-enforced hot path.
+     *
+     * <p>On {@link WfCapabilityError.PerCallDenied} the enforcer throws;
+     * the exception propagates out of the wit-host lambda, wasmtime4j
+     * bubbles it into the outer {@link Call#evaluate} /
+     * {@link WebFunctionServiceOperator#computeNext} catch surface where
+     * it lands as a typed SPARQL error alongside {@link WfBudgetError}.
+     */
+    private static void enforceCapability(final CallbackContext ctx,
+                                          final String interfaceName,
+                                          final String method,
+                                          final String argsSummary) {
+        if (ctx == null) return;
+        final java.util.Optional<CapabilityEnforcer> enforcer = CapabilityEnforcer.activePolicy();
+        if (enforcer.isEmpty()) return;
+        final CapabilityGrant grant = ctx.capabilityGrant().orElse(null);
+        enforcer.get().perCallback(ctx, grant, interfaceName, method, argsSummary);
+    }
+
+    /**
+     * Extract the hostname (or full URL when parsing fails) for use as
+     * {@code argsSummary} on {@code http-callbacks/*} dispatches; the
+     * {@link HostAllowlist} matcher applied by
+     * {@link CapabilityEnforcer#perCallback} compares against exactly
+     * this value.
+     */
+    private static String hostnameFromUrl(final String url) {
+        if (url == null) return "";
+        try {
+            final String host = java.net.URI.create(url).getHost();
+            return host == null ? url : host;
+        } catch (RuntimeException ignore) {
+            return url;
+        }
+    }
+
+    /** First-N-chars snippet for a SPARQL text argsSummary. */
+    private static String snippet(final String s, final int maxChars) {
+        if (s == null) return "";
+        return s.length() <= maxChars ? s : s.substring(0, maxChars);
+    }
+
     /** {@code execute-query: func(sparql: string, bindings: list<binding>,
      *  max-rows: option<u32>) -> result<binding-sets, string>}. */
     public static WitHostFunction executeQuery() {
@@ -44,6 +94,9 @@ public final class HostCallbacks {
                     "wf callback: no context bound — needs SERVICE wf:call to "
                     + "carry the ExecutionContext through")) };
             }
+            final String sparqlPreview = args.length > 0
+                    ? snippet(((ComponentVal) args[0]).asString(), 60) : "";
+            enforceCapability(ctx, "graph-callbacks", "execute-query", sparqlPreview);
             // Phase 1 fuel-metering toll — throws WfBudgetError on
             // exhaustion, unwinds the wasm frame, gets promoted to a
             // typed WF_HOST_CALLBACK_TOLL_EXHAUSTED at the outer
@@ -80,6 +133,7 @@ public final class HostCallbacks {
                 return new Object[] { ComponentVal.err(ComponentVal.string(
                     "wf callback: no context bound")) };
             }
+            enforceCapability(ctx, "graph-callbacks", "follow-predicate", "");
             ctx.chargeToll("host.follow-predicate");
             try {
                 final Value subj = decodeNode((ComponentVal) args[0]);
@@ -114,6 +168,9 @@ public final class HostCallbacks {
                 return new Object[] { ComponentVal.err(ComponentVal.string(
                     "wf callback: no context bound")) };
             }
+            final String prepPreview = args.length > 0
+                    ? snippet(((ComponentVal) args[0]).asString(), 60) : "";
+            enforceCapability(ctx, "graph-callbacks", "prepare-query", prepPreview);
             ctx.chargeToll("host.prepare-query");
             try {
                 final String sparql = ((ComponentVal) args[0]).asString();
@@ -138,6 +195,7 @@ public final class HostCallbacks {
                 return new Object[] { ComponentVal.err(ComponentVal.string(
                     "wf callback: no context bound")) };
             }
+            enforceCapability(ctx, "graph-callbacks", "run-prepared", "");
             ctx.chargeToll("host.run-prepared");
             try {
                 final int handle = (int) ((ComponentVal) args[0]).asU32();
@@ -170,6 +228,9 @@ public final class HostCallbacks {
                     "wf callback: no context bound — SERVICE wf:call binds one, "
                     + "filter-function wf:call does not")) };
             }
+            final String updPreview = args.length > 0
+                    ? snippet(((ComponentVal) args[0]).asString(), 60) : "";
+            enforceCapability(ctx, "graph-callbacks", "execute-update", updPreview);
             ctx.chargeToll("host.execute-update");
             try {
                 final String sparql = ((ComponentVal) args[0]).asString();
@@ -222,6 +283,9 @@ public final class HostCallbacks {
                     + "on the CallbackContext — bind with `bind(dictionary)` or "
                     + "`bind(execCtx, dictionary)` at the top of the wf:call frame")) };
             }
+            final String invokeUrl = args.length > 0
+                    ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "wasm-callbacks", "invoke-wasm", invokeUrl);
             ctx.chargeToll("host.invoke-wasm");
             try {
                 final String url = ((ComponentVal) args[0]).asString();
@@ -303,6 +367,9 @@ public final class HostCallbacks {
                     graphCallError("backend-error",
                         "wf callback: no context bound")) };
             }
+            final String graphQPreview = args.length > 0
+                    ? snippet(((ComponentVal) args[0]).asString(), 60) : "";
+            enforceCapability(ctx, "graph-callbacks", "execute-query", graphQPreview);
             ctx.chargeToll("graph-callbacks.execute-query");
             try {
                 final String sparql = ((ComponentVal) args[0]).asString();
@@ -354,6 +421,9 @@ public final class HostCallbacks {
                     graphCallError("backend-error",
                         "wf callback: no context bound")) };
             }
+            final String graphUPreview = args.length > 0
+                    ? snippet(((ComponentVal) args[0]).asString(), 60) : "";
+            enforceCapability(ctx, "graph-callbacks", "execute-update", graphUPreview);
             ctx.chargeToll("graph-callbacks.execute-update");
             try {
                 final String sparql = ((ComponentVal) args[0]).asString();
@@ -482,6 +552,8 @@ public final class HostCallbacks {
             // Call.evaluate/WebFunctionServiceOperator wrapping), so
             // outside-the-invocation-hot-path calls stay unmetered.
             final CallbackContext ctx = CallbackContext.current();
+            final String getUrl = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "http-callbacks", "http-get", hostnameFromUrl(getUrl));
             if (ctx != null) ctx.chargeToll("http-callbacks.http-get");
             try {
                 final String url = ((ComponentVal) args[0]).asString();
@@ -508,6 +580,8 @@ public final class HostCallbacks {
     public static WitHostFunction httpPostJsonV1() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
+            final String postUrl = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "http-callbacks", "http-post-json", hostnameFromUrl(postUrl));
             if (ctx != null) ctx.chargeToll("http-callbacks.http-post-json");
             try {
                 final String url = ((ComponentVal) args[0]).asString();
@@ -612,6 +686,8 @@ public final class HostCallbacks {
     public static WitHostFunction invokeWasmV1() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
+            final String wasmUri = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "wasm-callbacks", "invoke-wasm", wasmUri);
             if (ctx != null) ctx.chargeToll("wasm-callbacks.invoke-wasm");
             return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
                 "invoke-wasm: not implemented on JVM host (MVP stub — full sub-component "
@@ -630,6 +706,8 @@ public final class HostCallbacks {
     public static WitHostFunction invokeWasmService() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
+            final String wasmSvcUri = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "wasm-callbacks", "invoke-wasm-service", wasmSvcUri);
             if (ctx != null) ctx.chargeToll("wasm-callbacks.invoke-wasm-service");
             return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
                 "invoke-wasm-service: not implemented on JVM host (MVP stub — full "
