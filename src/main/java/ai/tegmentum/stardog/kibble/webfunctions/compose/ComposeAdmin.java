@@ -15,7 +15,7 @@ import java.util.Optional;
  * <ol>
  *   <li>{@link ComposeOrchestratorClient} — invokes the composed
  *       orchestrator wasm's {@code sys:compose/emit#compose} and
- *       {@code sys:compose/rdf#plan-to-turtle} exports.</li>
+ *       {@code sys:compose/rdf#plan-to-turtle-with-artifact} exports.</li>
  *   <li>{@link ComposedArtifactStore} — persists the composed wasm
  *       under its {@code sha256://<hex>} content-addressed URL.</li>
  *   <li>{@link ComposePolicyStoreWriter} — projects the Turtle from
@@ -41,16 +41,22 @@ public final class ComposeAdmin {
 
     /**
      * Result of a single admin composition — carries the artifact URL
-     * of the composed wasm, the size in bytes, and the plan IRI the
-     * RDF was inserted under.
+     * of the composed wasm, the lowercase-hex SHA-256 of the composed
+     * bytes, the size in bytes, and the plan IRI the RDF was inserted
+     * under.
      */
     public static final class ComposedResult {
         private final String artifactUrl;
+        private final String digestHex;
         private final long size;
         private final String planIri;
 
-        public ComposedResult(final String artifactUrl, final long size, final String planIri) {
+        public ComposedResult(final String artifactUrl,
+                              final String digestHex,
+                              final long size,
+                              final String planIri) {
             this.artifactUrl = Objects.requireNonNull(artifactUrl, "artifactUrl");
+            this.digestHex = Objects.requireNonNull(digestHex, "digestHex");
             this.size = size;
             this.planIri = planIri;
         }
@@ -63,6 +69,14 @@ public final class ComposeAdmin {
          * one under {@code sha256://}.
          */
         public String artifactUrl() { return artifactUrl; }
+
+        /**
+         * Lowercase-hex SHA-256 of the composed bytes (no scheme
+         * prefix). Same value that lands in the composition RDF as the
+         * {@code comp:compositionDigest} literal — an anchor that stays
+         * valid across artifact-URL re-hosting.
+         */
+        public String digestHex() { return digestHex; }
 
         /** Length of the composed wasm in bytes. */
         public long size() { return size; }
@@ -138,11 +152,25 @@ public final class ComposeAdmin {
      * Compose a plan handed as pre-encoded CBOR under an explicit
      * plan subject IRI. The IRI is:
      * <ul>
-     *   <li>keyed into the {@code plan-to-turtle-with-iri} guest call,
-     *       so the resulting Turtle references it directly;</li>
+     *   <li>keyed into the {@code plan-to-turtle-with-artifact} guest
+     *       call, so the resulting Turtle references it directly and
+     *       carries a {@code comp:hasArtifact} anchor triple pointing
+     *       at the composed artifact URL;</li>
      *   <li>keyed into {@link ComposePolicyStoreWriter#write}'s
      *       idempotent overwrite so a repeat composition of the same
      *       plan overwrites the same triples.</li>
+     * </ul>
+     *
+     * <p>The resulting composition RDF carries two anchor triples on
+     * top of the standard plan RDF:
+     * <ul>
+     *   <li>{@code <plan> comp:hasArtifact <sha256://<hex>>} — REQUIRED;
+     *       the artifact URL. Downstream admins SPARQL-join against
+     *       this to answer "which extension grant covers which
+     *       composition."</li>
+     *   <li>{@code <plan> comp:compositionDigest "<hex>"} — OPTIONAL
+     *       (this method always emits it); content-identity anchor
+     *       that stays valid across artifact-URL re-hosting.</li>
      * </ul>
      *
      * @param planCbor canonical CBOR of a {@link PlanV1}.
@@ -159,12 +187,20 @@ public final class ComposeAdmin {
         } catch (IOException ioe) {
             throw new ComposeException(null, "artifact store persist failed: " + ioe.getMessage(), ioe);
         }
-        final String turtle = planIri == null
-                ? client.planToTurtleCbor(planCbor)
-                : client.planToTurtleCbor(planCbor, planIri);
-        policyStoreWriter.write(turtle.getBytes(java.nio.charset.StandardCharsets.UTF_8), planIri);
-        return new ComposedResult(artifactUrl, composed.length,
-                planIri == null ? "urn:composition:plan" : planIri);
+        final String digestHex = ComposedArtifactStore.hexDigestFor(composed);
+        final String effectivePlanIri = planIri == null ? "urn:composition:plan" : planIri;
+        // Emit hasArtifact + compositionDigest triples so the composition
+        // RDF is joinable against capability grants directly — no
+        // side-channel registry needed. See the composition-admin memo
+        // §4.6 for the diff-query pattern that this closes.
+        final String turtle = client.planToTurtleWithArtifact(
+                planCbor,
+                Optional.of(effectivePlanIri),
+                artifactUrl,
+                Optional.of(digestHex));
+        policyStoreWriter.write(turtle.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                effectivePlanIri);
+        return new ComposedResult(artifactUrl, digestHex, composed.length, effectivePlanIri);
     }
 
     /**

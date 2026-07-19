@@ -6,6 +6,7 @@ import ai.tegmentum.webassembly4j.api.exception.ExecutionException;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * High-level Java wrapper over the compose orchestrator's WIT exports.
@@ -44,6 +45,7 @@ public final class ComposeOrchestratorClient {
     static final String EXPORT_EMIT_GET_ARTIFACT     = "sys:compose/emit@1.0.0#get-artifact";
     static final String EXPORT_RDF_PLAN_TO_TURTLE    = "sys:compose/rdf@1.0.0#plan-to-turtle";
     static final String EXPORT_RDF_PLAN_TO_TURTLE_WI = "sys:compose/rdf@1.0.0#plan-to-turtle-with-iri";
+    static final String EXPORT_RDF_PLAN_TO_TURTLE_WA = "sys:compose/rdf@1.0.0#plan-to-turtle-with-artifact";
     static final String EXPORT_RDF_PLAN_FROM_TURTLE  = "sys:compose/rdf@1.0.0#plan-from-turtle";
     static final String EXPORT_RDF_PLAN_FROM_TURTLE_WI = "sys:compose/rdf@1.0.0#plan-from-turtle-with-iri";
 
@@ -139,6 +141,49 @@ public final class ComposeOrchestratorClient {
         Objects.requireNonNull(planCbor, "planCbor");
         Objects.requireNonNull(planIri, "planIri");
         return callTurtle(EXPORT_RDF_PLAN_TO_TURTLE_WI, new Object[]{planCbor, planIri});
+    }
+
+    /**
+     * Render {@code planCbor} as a Turtle document with two additional
+     * composed-artifact anchor triples on top of the standard plan RDF:
+     * <ul>
+     *   <li>{@code <planIri> comp:hasArtifact <artifactUrl>} — REQUIRED;
+     *       the URL the composed wasm is served from (default
+     *       {@code sha256://<hex>}, any URL scheme accepted).</li>
+     *   <li>{@code <planIri> comp:compositionDigest "<hex>"} — OPTIONAL;
+     *       emitted only when {@code digestHex} is present. Lowercase-hex
+     *       SHA-256 of the composed bytes as an {@code xsd:string}.
+     *       Stable across artifact-URL re-hosting.</li>
+     * </ul>
+     *
+     * <p>Downstream admins SPARQL-join the {@code comp:hasArtifact}
+     * object against capability-grant subjects directly, without needing
+     * an external composed-artifact registry. See the composition-admin
+     * memo §4.6 for the diff-query pattern.
+     *
+     * @param planCbor     canonical CBOR of a {@link PlanV1}.
+     * @param planIri      plan subject IRI to anchor the artifact triples on.
+     *                     When {@code null}, defaults to the orchestrator's
+     *                     {@code urn:composition:plan}.
+     * @param artifactUrl  URL the composed wasm is served from (required).
+     * @param digestHex    optional lowercase-hex SHA-256 of the composed
+     *                     bytes; when {@code Optional.empty()} the digest
+     *                     anchor is omitted.
+     */
+    public String planToTurtleWithArtifact(final byte[] planCbor,
+                                           final Optional<String> planIri,
+                                           final String artifactUrl,
+                                           final Optional<String> digestHex) {
+        Objects.requireNonNull(planCbor, "planCbor");
+        Objects.requireNonNull(planIri, "planIri");
+        Objects.requireNonNull(artifactUrl, "artifactUrl");
+        Objects.requireNonNull(digestHex, "digestHex");
+        final String effectivePlanIri = planIri.orElse("urn:composition:plan");
+        // WIT `option<string>` marshals through the natural-Java shape as
+        // Optional<String>; hand it through untouched.
+        return callTurtle(
+                EXPORT_RDF_PLAN_TO_TURTLE_WA,
+                new Object[]{planCbor, effectivePlanIri, artifactUrl, digestHex});
     }
 
     /**
