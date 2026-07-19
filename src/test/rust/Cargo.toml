@@ -1,8 +1,13 @@
 [workspace]
 
+# Component-model crates (to_upper_component, multi_var_component,
+# sum_component) were retired here and moved to
+# webfunctions/crates/example-{uppercase-extension,multi-var-filter,sum-aggregate}
+# so the four engine bindings (stardog, jena, rdf4j, oxigraph) share
+# one wasm per test surface. The remaining members below are
+# stardog-plugin-internal module-mode fixtures.
 members = [
     "aggregate/sum",
-    "aggregate/sum_component",
     "function/concat",
     "function/const0x1x1",
     "function/const0x1x2",
@@ -19,8 +24,6 @@ members = [
     "function/mapping_dictionary_get",
     "function/array_of",
     "function/to_upper",
-    "function/to_upper_component",
-    "function/multi_var_component",
 ]
 
 [profile.release]
