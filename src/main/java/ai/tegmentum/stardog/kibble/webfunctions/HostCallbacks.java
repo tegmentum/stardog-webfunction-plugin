@@ -866,7 +866,7 @@ public final class HostCallbacks {
                 args,
                 /* interfaceMethod */ "invoke-wasm",
                 /* returnShape    */ CalleeReturnShape.SINGLE_TERM,
-                /* invoker        */ CalleeComponentLoader::load);
+                /* invoker        */ PROD_CALLEE_INVOKER);
     }
 
     /**
@@ -896,7 +896,7 @@ public final class HostCallbacks {
                 args,
                 /* interfaceMethod */ "invoke-wasm-service",
                 /* returnShape    */ CalleeReturnShape.LIST_OF_BINDING,
-                /* invoker        */ CalleeComponentLoader::load);
+                /* invoker        */ PROD_CALLEE_INVOKER);
     }
 
     /**
@@ -916,16 +916,48 @@ public final class HostCallbacks {
     }
 
     /**
-     * Callee load strategy — package-private and injectable so unit
-     * tests can drive the dispatch (nesting, capability, error mapping,
-     * fuel-reflection) without wiring a real wasm engine.
+     * Callee load + invoke strategy — package-private and injectable so
+     * unit tests can drive the dispatch (nesting, capability, error
+     * mapping, fuel-reflection) without wiring a real wasm engine.
+     *
+     * <p>The body-callback shape keeps the {@link StardogWasmInstance}
+     * and its {@link com.stardog.stark.query.SelectQueryResult} alive
+     * for the encoding pass (both are Closeable), then closes them on
+     * exit. Production impl composes {@link CalleeComponentLoader#load}
+     * with {@link StardogWasmInstance#evaluate}; tests supply a mock
+     * that skips the wasm engine entirely and hands a synthetic
+     * {@link com.stardog.stark.query.SelectQueryResult} to the body.
      */
     @FunctionalInterface
     interface CalleeInvoker {
-        StardogWasmInstance load(String url,
-                                 com.complexible.stardog.index.dictionary.MappingDictionary dict)
-                throws java.net.MalformedURLException, java.util.concurrent.ExecutionException;
+        <R> R invoke(String url,
+                     com.complexible.stardog.index.dictionary.MappingDictionary dict,
+                     Value[] args,
+                     java.util.function.Function<
+                             com.stardog.stark.query.SelectQueryResult, R> body)
+                throws Exception;
     }
+
+    /**
+     * Production {@link CalleeInvoker} — delegates load to
+     * {@link CalleeComponentLoader}, dispatch to
+     * {@link StardogWasmInstance#evaluate}. Wrapped in try-with-resources
+     * so the instance + result close on body exit even under exceptions.
+     */
+    static final CalleeInvoker PROD_CALLEE_INVOKER = new CalleeInvoker() {
+        @Override
+        public <R> R invoke(final String url,
+                            final com.complexible.stardog.index.dictionary.MappingDictionary dict,
+                            final Value[] args,
+                            final java.util.function.Function<
+                                    com.stardog.stark.query.SelectQueryResult, R> body)
+                throws Exception {
+            try (StardogWasmInstance instance = CalleeComponentLoader.load(url, dict);
+                 com.stardog.stark.query.SelectQueryResult rs = instance.evaluate(args)) {
+                return body.apply(rs);
+            }
+        }
+    };
 
     /**
      * Shared dispatch body for {@link #invokeWasmService} and
@@ -1051,65 +1083,54 @@ public final class HostCallbacks {
                 ctx.componentInstanceOrNull();
         ctx.enterWasmCall();
         try {
-            final StardogWasmInstance calleeInstance;
-            try {
-                calleeInstance = invoker.load(url, ctx.dictionary());
-            } catch (java.net.MalformedURLException mue) {
-                return new Object[] { ComponentVal.err(wasmCallError("not-found",
-                    "invoke-wasm: malformed callee url '" + url + "': "
-                    + (mue.getMessage() == null ? mue.toString() : mue.getMessage()))) };
-            } catch (java.util.concurrent.ExecutionException ee) {
-                final Throwable cause = ee.getCause() == null ? ee : ee.getCause();
-                return new Object[] { ComponentVal.err(wasmCallError("not-found",
-                    "invoke-wasm: failed to load callee '" + url + "': "
-                    + (cause.getMessage() == null ? cause.toString() : cause.getMessage()))) };
-            } catch (SecurityException se) {
+            // function-name is preserved on the wire but not consulted
+            // by dispatch — the base sparql-extension world auto-discovers
+            // the single filter function via register(); a WIT-level
+            // explicit function-name dispatch is deferred to a follow-up.
+            return invoker.invoke(url, ctx.dictionary(), callArgs, rs -> {
+                if (returnShape == CalleeReturnShape.SINGLE_TERM) {
+                    return new Object[] { ComponentVal.ok(
+                        encodeSingleTermFromResult(rs)) };
+                } else {
+                    return new Object[] { ComponentVal.ok(
+                        encodeListOfBindingFromResult(rs, ctx.maxRows())) };
+                }
+            });
+        } catch (java.net.MalformedURLException mue) {
+            return new Object[] { ComponentVal.err(wasmCallError("not-found",
+                "invoke-wasm: malformed callee url '" + url + "': "
+                + (mue.getMessage() == null ? mue.toString() : mue.getMessage()))) };
+        } catch (java.util.concurrent.ExecutionException ee) {
+            final Throwable cause = ee.getCause() == null ? ee : ee.getCause();
+            return new Object[] { ComponentVal.err(wasmCallError("not-found",
+                "invoke-wasm: failed to load callee '" + url + "': "
+                + (cause.getMessage() == null ? cause.toString() : cause.getMessage()))) };
+        } catch (SecurityException se) {
+            return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
+                "invoke-wasm: load denied for '" + url + "': "
+                + (se.getMessage() == null ? se.toString() : se.getMessage()))) };
+        } catch (WfBudgetError.HostCallbackTollExhausted fuelExhausted) {
+            // Reflection fuel-exhaustion (from reflectCalleeFuel...) —
+            // let it propagate so the outer wf:call catch surface promotes
+            // to a typed WfBudgetError. finally still runs to restore
+            // caller's ComponentInstance.
+            throw fuelExhausted;
+        } catch (java.io.IOException ioe) {
+            return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
+                "invoke-wasm: callee trap: "
+                + (ioe.getMessage() == null ? ioe.toString() : ioe.getMessage()))) };
+        } catch (Exception e) {
+            // Shiro auth exceptions are RuntimeExceptions; discriminate
+            // by class-name to avoid a compile-time shiro-core dep.
+            final String cn = e.getClass().getName();
+            if (cn.endsWith("AuthorizationException") || cn.endsWith("AuthenticationException")) {
                 return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
                     "invoke-wasm: load denied for '" + url + "': "
-                    + (se.getMessage() == null ? se.toString() : se.getMessage()))) };
-            } catch (RuntimeException re) {
-                // Shiro auth exceptions are RuntimeExceptions; discriminate
-                // by class-name to avoid a compile-time shiro-core dep.
-                final String cn = re.getClass().getName();
-                if (cn.endsWith("AuthorizationException") || cn.endsWith("AuthenticationException")) {
-                    return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
-                        "invoke-wasm: load denied for '" + url + "': "
-                        + (re.getMessage() == null ? re.toString() : re.getMessage()))) };
-                }
-                return new Object[] { ComponentVal.err(wasmCallError("not-found",
-                    "invoke-wasm: failed to load callee '" + url + "': "
-                    + (re.getMessage() == null ? re.toString() : re.getMessage()))) };
+                    + (e.getMessage() == null ? e.toString() : e.getMessage()))) };
             }
-            try (StardogWasmInstance owned = calleeInstance) {
-                // Callee's evaluate stamps its own ComponentInstance on
-                // the ctx via stampComponentInstanceOnCurrentContext.
-                // function-name is not consulted by the base sparql-extension
-                // world — extension.call auto-discovers the single filter
-                // function via register(); a WIT-level explicit function-name
-                // dispatch is deferred to a follow-up wave. Preserve the
-                // arg on the wire for future use.
-                final com.stardog.stark.query.SelectQueryResult rs;
-                try {
-                    rs = owned.evaluate(callArgs);
-                } catch (java.io.IOException ioe) {
-                    return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
-                        "invoke-wasm: callee trap: "
-                        + (ioe.getMessage() == null ? ioe.toString() : ioe.getMessage()))) };
-                } catch (RuntimeException re) {
-                    return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
-                        "invoke-wasm: callee trap: "
-                        + (re.getMessage() == null ? re.toString() : re.getMessage()))) };
-                }
-                try (com.stardog.stark.query.SelectQueryResult held = rs) {
-                    if (returnShape == CalleeReturnShape.SINGLE_TERM) {
-                        return new Object[] { ComponentVal.ok(
-                            encodeSingleTermFromResult(held)) };
-                    } else {
-                        return new Object[] { ComponentVal.ok(
-                            encodeListOfBindingFromResult(held, ctx.maxRows())) };
-                    }
-                }
-            }
+            return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
+                "invoke-wasm: callee trap: "
+                + (e.getMessage() == null ? e.toString() : e.getMessage()))) };
         } finally {
             // Restore caller's ComponentInstance and reflect callee's
             // fuel consumption back into the caller's budget (Phase-N4).
