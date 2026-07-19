@@ -108,13 +108,15 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
         try {
             final Solution s = computeNextInternal();
             // Post-invocation counter increment for each yielded solution
-            // (matches memo §4 step 11 "on success"). Use tollUsed as an
-            // observed-lower-bound cost, clamped to at least 1 unit so the
-            // counter advances even when the extension makes no host
-            // callbacks. Only account when a real solution was produced
-            // (endOfData signals streaming complete; skip the tail no-op).
+            // (matches memo §4 step 11 "on success"). Prefer the store's
+            // real fuel_consumed reading via cbCtx.fuelConsumed(); when the
+            // provider returns -1 (module mode, non-wasmtime), fall back to
+            // the toll counter clamped to at least 1 unit so the counter
+            // still advances for extensions that made no host callbacks.
+            // Only account when a real solution was produced (endOfData
+            // signals streaming complete; skip the tail no-op).
             if (policy != null && s != null) {
-                policy.postInvocation(fuelCtx, Math.max(1L, cbCtx.tollUsed()));
+                policy.postInvocation(fuelCtx, cbCtx, Math.max(1L, cbCtx.tollUsed()));
             }
             return s;
         } catch (WfBudgetError e) {
@@ -122,9 +124,10 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
             // it as a plugin error with the JSON payload intact.
             recordAttributionOnce(e, cbCtx);
             if (policy != null && !(e instanceof WfBudgetError.UserQuotaExhausted)) {
-                // Charge the observed cost even on trap paths; do NOT charge
-                // on a pre-check quota-exhaustion (nothing ran).
-                policy.postInvocation(fuelCtx, WebFunctionConfig.fuelPerInvocationMax());
+                // Charge on trap: prefer real fuel_consumed, else the cap.
+                // Skip UserQuotaExhausted — that error trips pre-invocation
+                // and consumes no fuel.
+                policy.postInvocation(fuelCtx, cbCtx, WebFunctionConfig.fuelPerInvocationMax());
             }
             throw e;
         } catch (RuntimeException e) {
@@ -133,7 +136,7 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
                 recordAttributionOnce(typed, cbCtx);
             }
             if (policy != null && !(typed instanceof WfBudgetError.UserQuotaExhausted)) {
-                policy.postInvocation(fuelCtx, WebFunctionConfig.fuelPerInvocationMax());
+                policy.postInvocation(fuelCtx, cbCtx, WebFunctionConfig.fuelPerInvocationMax());
             }
             if (typed != null) {
                 throw typed;
@@ -161,7 +164,15 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
         if (!WebFunctionConfig.attributionLogEnabled()) return;
         attributionRecorded = true;
         final String uri = wasmIRI == null ? "" : wasmIRI.toString();
-        final long fuel = cbCtx == null ? 0L : cbCtx.tollUsed();
+        // Prefer the store's real fuel_consumed (wasmtime4j 1.4.7+); fall back
+        // to the Java-side toll counter when the provider returns -1.
+        final long fuel;
+        if (cbCtx == null) {
+            fuel = 0L;
+        } else {
+            final long real = cbCtx.fuelConsumed();
+            fuel = real >= 0L ? real : cbCtx.tollUsed();
+        }
         final String queryId = safeQueryId();
         if (trap == null) {
             AttributionRing.recordSuccess(uri, fuel, queryId);

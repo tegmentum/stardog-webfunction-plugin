@@ -154,4 +154,25 @@ public final class UserFuelPolicy {
                 .orElseGet(() -> UserFuelState.fresh(ctx.userId(), perUserMonthly));
         store.saveUser(existing.addUsed(fuelConsumed));
     }
+
+    /**
+     * Post-invocation charge that prefers the store's real
+     * {@code fuel_consumed} reading through {@link CallbackContext#fuelConsumed()}
+     * when the provider supports it (wasmtime as of wasmtime4j 1.4.7 /
+     * webassembly4j 2.4.3), falling back to {@code fallback} when the
+     * sentinel {@code -1} comes back (module mode, non-wasmtime provider).
+     *
+     * <p>The fallback is caller-supplied so success paths can pass the
+     * observed host-callback tolls ({@code Math.max(1, cbCtx.tollUsed())})
+     * and trap paths can pass the per-invocation cap — the same shape the
+     * original Phase-1/2 landing used, now upgraded to real accounting
+     * when available.
+     */
+    public void postInvocation(final FuelContext ctx,
+                               final CallbackContext cbCtx,
+                               final long fallback) {
+        final long consumed = cbCtx == null ? -1L : cbCtx.fuelConsumed();
+        final long charge = consumed >= 0L ? consumed : fallback;
+        postInvocation(ctx, charge);
+    }
 }

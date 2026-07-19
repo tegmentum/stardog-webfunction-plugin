@@ -142,26 +142,36 @@ public final class Call extends AbstractExpression implements UserDefinedFunctio
                                             stardogWasmInstance.selectQueryResultToValueOrError(selectQueryResult);
                                     // Attribution first so the row logs the attempted
                                     // invocation even if the Phase 2 charge fails.
+                                    // Real fuel_consumed from ComponentInstance.fuelConsumed()
+                                    // when the provider supports it (wasmtime 1.4.7+); the
+                                    // Java-side toll counter is the honest fallback.
+                                    final long realFuel = cbCtx.fuelConsumed();
+                                    final long attributedFuel =
+                                            realFuel >= 0L ? realFuel : cbCtx.tollUsed();
                                     AttributionRing.recordSuccess(
-                                            extensionUri, cbCtx.tollUsed(), "");
+                                            extensionUri, attributedFuel, "");
                                     if (policy != null) {
-                                        policy.postInvocation(fuelCtx,
+                                        policy.postInvocation(fuelCtx, cbCtx,
                                                 Math.max(1L, cbCtx.tollUsed()));
                                     }
                                     return result;
                                 }
                             } catch (IOException | ExecutionException ex) {
                                 final WfBudgetError typed = FuelTrapMapper.mapOrNull(ex, cbCtx);
+                                final long trapRealFuel = cbCtx.fuelConsumed();
+                                final long trapAttributedFuel =
+                                        trapRealFuel >= 0L ? trapRealFuel : cbCtx.tollUsed();
                                 if (typed != null) {
                                     AttributionRing.recordTrap(
-                                            extensionUri, typed, cbCtx.tollUsed(), "");
+                                            extensionUri, typed, trapAttributedFuel, "");
                                 }
-                                // Charge on trap: cap as upper bound (guest necessarily
+                                // Charge on trap: prefer real fuel_consumed, else the
+                                // per-invocation cap as an upper bound (guest necessarily
                                 // hit the cap to trap). Skipped for UserQuotaExhausted —
                                 // that error is thrown pre-invocation and consumes no fuel.
                                 if (policy != null
                                         && !(typed instanceof WfBudgetError.UserQuotaExhausted)) {
-                                    policy.postInvocation(fuelCtx,
+                                    policy.postInvocation(fuelCtx, cbCtx,
                                             WebFunctionConfig.fuelPerInvocationMax());
                                 }
                                 if (typed != null) {
@@ -173,14 +183,17 @@ public final class Call extends AbstractExpression implements UserDefinedFunctio
                                 // (WfBudgetError.HostCallbackTollExhausted) land
                                 // here too — same promotion path.
                                 final WfBudgetError typed = FuelTrapMapper.mapOrNull(ex, cbCtx);
+                                final long rtRealFuel = cbCtx.fuelConsumed();
+                                final long rtAttributedFuel =
+                                        rtRealFuel >= 0L ? rtRealFuel : cbCtx.tollUsed();
                                 if (typed != null) {
                                     AttributionRing.recordTrap(
-                                            extensionUri, typed, cbCtx.tollUsed(), "");
+                                            extensionUri, typed, rtAttributedFuel, "");
                                 }
                                 if (policy != null
                                         && !(typed instanceof WfBudgetError.UserQuotaExhausted)
                                         && !(ex instanceof WfBudgetError.UserQuotaExhausted)) {
-                                    policy.postInvocation(fuelCtx,
+                                    policy.postInvocation(fuelCtx, cbCtx,
                                             Math.max(1L, cbCtx.tollUsed()));
                                 }
                                 if (typed != null) {
