@@ -1,0 +1,213 @@
+package ai.tegmentum.stardog.kibble.webfunctions;
+
+import com.complexible.stardog.StardogException;
+
+/**
+ * Typed SPARQL error surface for the fuel-metering Phase 1 defensive layer.
+ *
+ * <p>Sealed hierarchy — a client that programmatically catches these can
+ * dispatch on the two variants without a chain of {@code getMessage()}
+ * string-matching. Each variant carries a machine-readable JSON payload
+ * (available via {@link #jsonPayload()}) alongside a human-readable
+ * {@link #getMessage()}.
+ *
+ * <p>The JSON payload is also embedded in {@link #getMessage()} at a
+ * well-known suffix ({@code " json="}), so downstream surfaces that only
+ * carry {@code String message} (Stardog's SPARQL Results JSON error field
+ * currently among them) still expose the structured data through a
+ * documented parsing convention. Programmatic callers that hold the Java
+ * object should prefer {@link #jsonPayload()} directly.
+ *
+ * <p>Both variants extend {@link StardogException} (a {@link RuntimeException})
+ * so they propagate through Stardog's query-evaluation stack as any other
+ * plugin error would; both are Phase-1 defensive-only per
+ * {@code fuel-implementation.md} §5 and §8. Phase-2+ variants
+ * (WF_USER_QUOTA_EXHAUSTED, WF_ORG_QUOTA_EXHAUSTED, WF_*_RATE_LIMITED)
+ * are not landed in Phase 1 and will extend this same base when they are.
+ *
+ * <p>Not exposed here: fuel-consumed as reported by wasmtime's store. The
+ * wasmtime4j provider does not expose a fuel-remaining/consumed hook to
+ * component-mode callers today, so Phase 1 reports the configured cap as
+ * {@code fuelConsumed} when a per-invocation trap fires (upper bound of
+ * consumption is honest since the guest necessarily hit the cap). Phase 2+
+ * lands the real accounting once wasmtime4j-provider surfaces the store.
+ */
+public abstract sealed class WfBudgetError extends StardogException
+        permits WfBudgetError.PerInvocationTrap,
+                WfBudgetError.HostCallbackTollExhausted {
+
+    private final String errorCode;
+    private final String jsonPayload;
+
+    private WfBudgetError(final String errorCode,
+                          final String humanMessage,
+                          final String jsonPayload) {
+        super(humanMessage + " json=" + jsonPayload);
+        this.errorCode = errorCode;
+        this.jsonPayload = jsonPayload;
+    }
+
+    /** Stable identifier — {@code WF_PER_INVOCATION_TRAP} or {@code WF_HOST_CALLBACK_TOLL_EXHAUSTED}. */
+    public final String errorCode() {
+        return errorCode;
+    }
+
+    /** Machine-parseable JSON payload; see subclass docs for the schema. */
+    public final String jsonPayload() {
+        return jsonPayload;
+    }
+
+    /**
+     * {@code WF_PER_INVOCATION_TRAP} — the guest exhausted its per-invocation
+     * fuel cap. Extension-author-actionable: fix the extension (likely a
+     * runaway loop) or raise {@code webfunctions.fuel.per-invocation.max}.
+     *
+     * <p>JSON payload schema:
+     * <pre>
+     * {
+     *   "error_code": "WF_PER_INVOCATION_TRAP",
+     *   "extension": "&lt;ipfs://... or file://... wasm URI&gt;",
+     *   "fuel_consumed": &lt;long, upper bound = per_invocation_max&gt;,
+     *   "per_invocation_max": &lt;long&gt;
+     * }
+     * </pre>
+     */
+    public static final class PerInvocationTrap extends WfBudgetError {
+
+        private final String extensionUri;
+        private final long fuelConsumed;
+        private final long perInvocationMax;
+
+        public PerInvocationTrap(final String extensionUri,
+                                 final long fuelConsumed,
+                                 final long perInvocationMax) {
+            super("WF_PER_INVOCATION_TRAP",
+                  humanMessage(extensionUri, perInvocationMax),
+                  jsonOf(extensionUri, fuelConsumed, perInvocationMax));
+            this.extensionUri = extensionUri;
+            this.fuelConsumed = fuelConsumed;
+            this.perInvocationMax = perInvocationMax;
+        }
+
+        public String extensionUri()     { return extensionUri; }
+        public long   fuelConsumed()     { return fuelConsumed; }
+        public long   perInvocationMax() { return perInvocationMax; }
+
+        private static String humanMessage(final String extensionUri, final long cap) {
+            return "Extension '" + extensionUri + "' exceeded per-invocation fuel limit ("
+                    + cap + " units). This may indicate a runaway loop or malformed extension."
+                    + " Fix the extension or raise webfunctions.fuel.per-invocation.max.";
+        }
+
+        private static String jsonOf(final String extensionUri,
+                                     final long fuelConsumed,
+                                     final long perInvocationMax) {
+            return "{"
+                    + "\"error_code\":\"WF_PER_INVOCATION_TRAP\","
+                    + "\"extension\":\"" + jsonEscape(extensionUri) + "\","
+                    + "\"fuel_consumed\":" + fuelConsumed + ","
+                    + "\"per_invocation_max\":" + perInvocationMax
+                    + "}";
+        }
+    }
+
+    /**
+     * {@code WF_HOST_CALLBACK_TOLL_EXHAUSTED} — the per-invocation toll
+     * budget was exhausted while the host attempted to deduct the fixed
+     * toll for a specific callback before dispatching it. A variant of
+     * per-invocation trap; the callback name lets the extension author
+     * identify which host-callback path is being spammed.
+     *
+     * <p>JSON payload schema:
+     * <pre>
+     * {
+     *   "error_code": "WF_HOST_CALLBACK_TOLL_EXHAUSTED",
+     *   "extension": "&lt;ipfs://... or file://... wasm URI&gt;",
+     *   "callback_name": "&lt;e.g. graph-callbacks.execute-query&gt;",
+     *   "fuel_consumed": &lt;long, toll cycles used to this point&gt;,
+     *   "per_invocation_max": &lt;long&gt;,
+     *   "host_callback_toll": &lt;long, per-callback toll amount&gt;
+     * }
+     * </pre>
+     */
+    public static final class HostCallbackTollExhausted extends WfBudgetError {
+
+        private final String extensionUri;
+        private final String callbackName;
+        private final long fuelConsumed;
+        private final long perInvocationMax;
+        private final long hostCallbackToll;
+
+        public HostCallbackTollExhausted(final String extensionUri,
+                                         final String callbackName,
+                                         final long fuelConsumed,
+                                         final long perInvocationMax,
+                                         final long hostCallbackToll) {
+            super("WF_HOST_CALLBACK_TOLL_EXHAUSTED",
+                  humanMessage(extensionUri, callbackName),
+                  jsonOf(extensionUri, callbackName, fuelConsumed, perInvocationMax, hostCallbackToll));
+            this.extensionUri = extensionUri;
+            this.callbackName = callbackName;
+            this.fuelConsumed = fuelConsumed;
+            this.perInvocationMax = perInvocationMax;
+            this.hostCallbackToll = hostCallbackToll;
+        }
+
+        public String extensionUri()      { return extensionUri; }
+        public String callbackName()      { return callbackName; }
+        public long   fuelConsumed()      { return fuelConsumed; }
+        public long   perInvocationMax()  { return perInvocationMax; }
+        public long   hostCallbackToll()  { return hostCallbackToll; }
+
+        private static String humanMessage(final String extensionUri, final String callbackName) {
+            return "Extension '" + extensionUri + "' exhausted its per-invocation fuel while"
+                    + " paying the toll for host callback '" + callbackName + "'."
+                    + " This is a variant of per-invocation trap; treat as runaway callback traffic.";
+        }
+
+        private static String jsonOf(final String extensionUri,
+                                     final String callbackName,
+                                     final long fuelConsumed,
+                                     final long perInvocationMax,
+                                     final long hostCallbackToll) {
+            return "{"
+                    + "\"error_code\":\"WF_HOST_CALLBACK_TOLL_EXHAUSTED\","
+                    + "\"extension\":\"" + jsonEscape(extensionUri) + "\","
+                    + "\"callback_name\":\"" + jsonEscape(callbackName) + "\","
+                    + "\"fuel_consumed\":" + fuelConsumed + ","
+                    + "\"per_invocation_max\":" + perInvocationMax + ","
+                    + "\"host_callback_toll\":" + hostCallbackToll
+                    + "}";
+        }
+    }
+
+    /**
+     * Minimal JSON string escaping — only the characters mandated by
+     * RFC 8259 §7 that would break a bare {@code "..."} literal. Enough
+     * for extension URIs and callback names; we do not accept arbitrary
+     * user text into either field, so the escape surface is small.
+     */
+    private static String jsonEscape(final String s) {
+        if (s == null) return "";
+        final StringBuilder out = new StringBuilder(s.length() + 2);
+        for (int i = 0; i < s.length(); i++) {
+            final char c = s.charAt(i);
+            switch (c) {
+                case '"':  out.append("\\\""); break;
+                case '\\': out.append("\\\\"); break;
+                case '\b': out.append("\\b");  break;
+                case '\f': out.append("\\f");  break;
+                case '\n': out.append("\\n");  break;
+                case '\r': out.append("\\r");  break;
+                case '\t': out.append("\\t");  break;
+                default:
+                    if (c < 0x20) {
+                        out.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+            }
+        }
+        return out.toString();
+    }
+}
