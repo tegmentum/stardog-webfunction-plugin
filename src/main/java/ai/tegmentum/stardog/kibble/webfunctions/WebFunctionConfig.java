@@ -15,7 +15,6 @@ public final class WebFunctionConfig {
     public static final String PROP_MAX_EXEC_MILLIS  = "webfunctions.exec.max.millis";
     public static final String PROP_MAX_INSTANCES    = "webfunctions.max.instances";
     public static final String PROP_MAX_TABLE_ELEMS  = "webfunctions.table.max.elements";
-    public static final String PROP_ENGINE_MODE      = "webfunctions.engine.mode";
     public static final String PROP_ENGINE_PROVIDER  = "webfunctions.engine.provider";
     public static final String PROP_ENGINE_ID        = "webfunctions.engine.id";
 
@@ -89,8 +88,6 @@ public final class WebFunctionConfig {
     public static final int    DEFAULT_CAPABILITY_AUDIT_CAPACITY         = 100_000;
     public static final String DEFAULT_CAPABILITY_POLICY_STORE_DATABASE  = "system-webfunctions-capability";
 
-    public enum EngineMode { MODULE, COMPONENT }
-
     private WebFunctionConfig() {}
 
     public static String engineProvider() {
@@ -101,20 +98,6 @@ public final class WebFunctionConfig {
     public static java.util.Optional<String> engineId() {
         final String raw = System.getProperty(PROP_ENGINE_ID);
         return (raw == null || raw.isEmpty()) ? java.util.Optional.empty() : java.util.Optional.of(raw.trim());
-    }
-
-    public static EngineMode engineMode() {
-        final String raw = System.getProperty(PROP_ENGINE_MODE);
-        if (raw == null || raw.isEmpty()) {
-            return EngineMode.MODULE;
-        }
-        switch (raw.trim().toLowerCase()) {
-            case "component": return EngineMode.COMPONENT;
-            case "module":    return EngineMode.MODULE;
-            default:
-                throw new IllegalArgumentException(
-                        PROP_ENGINE_MODE + " must be 'module' or 'component' (was: '" + raw + "')");
-        }
     }
 
     public static WebAssemblyConfig fromSystemProperties() {
@@ -139,10 +122,11 @@ public final class WebFunctionConfig {
 
         // Provider-specific config. Only wasmtime needs a component-model opt-in;
         // other providers ship component-model support enabled by default (or not
-        // at all — we discover at build time via engine.capabilities()).
+        // at all — we discover at build time via engine.capabilities()). The
+        // plugin is component-only, so the opt-in is always on.
         if ("wasmtime".equalsIgnoreCase(engineProvider())) {
             builder.engineConfig(WasmtimeConfig.builder()
-                    .wasmComponentModel(engineMode() == EngineMode.COMPONENT)
+                    .wasmComponentModel(true)
                     .build());
         }
 

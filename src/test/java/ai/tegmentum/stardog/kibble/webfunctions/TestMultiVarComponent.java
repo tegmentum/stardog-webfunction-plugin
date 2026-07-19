@@ -5,8 +5,6 @@ import com.stardog.stark.Value;
 import com.stardog.stark.Values;
 import com.stardog.stark.query.BindingSet;
 import com.stardog.stark.query.SelectQueryResult;
-import org.junit.After;
-import org.junit.Before;
 import org.junit.Test;
 
 import java.io.File;
@@ -51,16 +49,6 @@ public class TestMultiVarComponent {
         }
         return System.getProperty("user.home")
                 + "/git/webfunctions/target/wasm32-wasip2/release/example_multi_var_filter.wasm";
-    }
-
-    @Before
-    public void enableComponentMode() {
-        System.setProperty(WebFunctionConfig.PROP_ENGINE_MODE, "component");
-    }
-
-    @After
-    public void resetComponentMode() {
-        System.clearProperty(WebFunctionConfig.PROP_ENGINE_MODE);
     }
 
     @Test

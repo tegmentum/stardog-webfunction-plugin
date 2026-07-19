@@ -91,14 +91,10 @@ public class WfTreeIT {
             conn.add().statement(Values.iri(C), Values.iri(HAS_CHILD), Values.iri(E));
             conn.commit();
         }
-
-        // Component mode must be on for the v0.3.0 WIT world.
-        System.setProperty(WebFunctionConfig.PROP_ENGINE_MODE, "component");
     }
 
     @AfterClass
     public static void tearDown() {
-        System.clearProperty(WebFunctionConfig.PROP_ENGINE_MODE);
         if (CONTAINER != null) CONTAINER.stop();
     }
 

@@ -4,7 +4,6 @@ import com.stardog.stark.Value;
 import com.stardog.stark.Values;
 import com.stardog.stark.query.SelectQueryResult;
 import org.junit.After;
-import org.junit.Before;
 import org.junit.Test;
 
 import java.io.File;
@@ -42,14 +41,8 @@ public class TestFuelMetering {
                 + "/git/webfunctions/target/wasm32-wasip2/release/example_uppercase_extension.wasm";
     }
 
-    @Before
-    public void enableComponentMode() {
-        System.setProperty(WebFunctionConfig.PROP_ENGINE_MODE, "component");
-    }
-
     @After
     public void resetSystemProperties() {
-        System.clearProperty(WebFunctionConfig.PROP_ENGINE_MODE);
         System.clearProperty(WebFunctionConfig.PROP_FUEL_ENABLED);
         System.clearProperty(WebFunctionConfig.PROP_FUEL_PER_INVOCATION_MAX);
         System.clearProperty(WebFunctionConfig.PROP_FUEL_HOST_CALLBACK_TOLL);

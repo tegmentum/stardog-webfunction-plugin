@@ -256,146 +256,120 @@ public class StardogWasmInstance implements Closeable {
     }
 
     public StardogWasmInstance(final URL wasmUrl) throws ExecutionException {
-        switch (WebFunctionConfig.engineMode()) {
-            case COMPONENT:
-                // Reuse the shared engine + cached component; do NOT hold the engine
-                // in `this.engine` since we don't want close() to release the shared
-                // resources. The instance is per-call.
-                this.component = null;
-                this.engine = null;
-                final Component cached;
-                try {
-                    cached = componentModeComponentFor(wasmUrl);
-                } catch (IOException ioe) {
-                    throw new RuntimeException(ioe);
-                }
-                // Capability-policy — resolve the effective grant against
-                // the RDF-backed policy store before wiring the linker so
-                // we only wire interfaces the grant permits. When the
-                // master gate is off (default), {@link
-                // CapabilityEnforcer#activePolicy} returns empty and we
-                // fall through to the pre-capability code path that wires
-                // every interface unconditionally.
-                //
-                // The resolver may throw LoadTimeDenied /
-                // UnknownExtension / PolicyStoreUnavailable — all
-                // StardogException subtypes, so they unwind this
-                // constructor and Call.evaluate /
-                // WebFunctionServiceOperator surface them as-is
-                // (mirroring WfBudgetError).
-                final Optional<CapabilityEnforcer> enforcer = CapabilityEnforcer.activePolicy();
-                final CapabilityGrant grant;
-                if (enforcer.isPresent()) {
-                    final CallbackContext preCtx = CallbackContext.current();
-                    grant = enforcer.get().preInvocation(cached, wasmUrl);
-                    if (preCtx != null) {
-                        preCtx.setCapabilityGrant(grant);
-                        // Phase 4 — capture the invoker's Shiro subject so
-                        // HostCallbacks can wrap Stardog operations in
-                        // ShiroUtils.executeAs(subject, ...). Null when
-                        // the invoker is anonymous; the per-callback wrap
-                        // consults webfunctions.capability.anonymous-policy
-                        // to decide the fallback.
-                        preCtx.setInvokerSubject(currentInvokerSubjectOrNull());
-                    }
-                    // Capability-ask wave — extract, parse, and record
-                    // the extension's declared ask so the admin has a
-                    // SPARQL-queryable review surface, and the warn-on-
-                    // undeclared diagnostic in HostCallbacks has an ask
-                    // to compare against ({@code capability-ask.md}
-                    // §§6+8). Best-effort: section absent or parse
-                    // failure both proceed with a warning per §6 — the
-                    // grant still gates execution regardless.
-                    extractAndRecordAsk(wasmUrl, preCtx);
-                } else {
-                    grant = null;
-                }
-                final DefaultLinkingContext.Builder componentLinker = DefaultLinkingContext.builder();
-                if (WebFunctionConfig.callbackEnabled()) {
-                    // tegmentum:webfunction/graph-callbacks@0.1.0 —
-                    // base-substrate graph callback surface for guests
-                    // targeting `world extension-with-host-callbacks`.
-                    // Signatures differ from the legacy shape:
-                    // execute-query takes one string (no bindings, no
-                    // max-rows) and returns `result<query-result,
-                    // graph-call-error>`; execute-update takes one string
-                    // and returns `result<_, graph-call-error>`. Error
-                    // discrimination lifts MalformedQuery onto syntax-error
-                    // and Shiro auth exceptions onto not-permitted, with
-                    // backend-error preserved as the default. Gated behind
-                    // the webfunctions.callback.enabled knob.
-                    //
-                    // The legacy stardog:webfunction/host@0.3.x-0.4.0
-                    // registrations that used to sit here were dead code
-                    // (zero consumers on the shape) and were retired; see
-                    // webfunction-wit/hostcallbacks-legacy-retirement.md.
-                    if (grant == null || grant.allowsInterface("graph-callbacks")) {
-                        componentLinker.addWitHostFunction(
-                            "tegmentum:webfunction/graph-callbacks@0.1.0#execute-query",
-                            HostCallbacks.graphExecuteQuery());
-                        componentLinker.addWitHostFunction(
-                            "tegmentum:webfunction/graph-callbacks@0.1.0#execute-update",
-                            HostCallbacks.graphExecuteUpdate());
-                    }
-                }
-                // tegmentum:webfunction/http-callbacks@0.1.0 —
-                // outbound HTTP for guests reaching services outside SPARQL
-                // (vector-index endpoints, LLM inference, blob stores).
-                // Impl uses JDK-native java.net.http.HttpClient — no
-                // external HTTP dep needed. Registered outside the
-                // callback-enabled gate because the flag controls
-                // re-entering the graph; HTTP reaches external services.
-                if (grant == null || grant.allowsInterface("http-callbacks")) {
-                    componentLinker.addWitHostFunction(
-                        "tegmentum:webfunction/http-callbacks@0.1.0#http-get",
-                        HostCallbacks.httpGet());
-                    componentLinker.addWitHostFunction(
-                        "tegmentum:webfunction/http-callbacks@0.1.0#http-post-json",
-                        HostCallbacks.httpPostJsonV1());
-                }
-                // tegmentum:webfunction/wasm-callbacks@0.1.0 —
-                // sub-component dispatch. MVP registers both invoke-wasm
-                // (scalar-return) and invoke-wasm-service (list<binding>-
-                // return) as not-permitted stubs so guests importing the
-                // interface can link. Full JVM-host component composition
-                // is separate future work; a guest that reaches these
-                // callbacks receives a typed policy denial with a
-                // descriptive message instead of a link-time trap.
-                if (grant == null || grant.allowsInterface("wasm-callbacks")) {
-                    componentLinker.addWitHostFunction(
-                        "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm",
-                        HostCallbacks.invokeWasmV1());
-                    componentLinker.addWitHostFunction(
-                        "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm-service",
-                        HostCallbacks.invokeWasmService());
-                }
-                this.instance = cached.instantiate(
-                        componentLinker.build(),
-                        WebFunctionConfig.componentConfigFromSystemProperties());
-                break;
-            case MODULE:
-            default:
-                final ai.tegmentum.webassembly4j.api.WebAssemblyBuilder engineBuilder =
-                        WebAssembly.builder()
-                                .provider(WebFunctionConfig.engineProvider())
-                                .config(WebFunctionConfig.fromSystemProperties());
-                WebFunctionConfig.engineId().ifPresent(engineBuilder::engine);
-                this.engine = engineBuilder.build();
-
-                final byte[] bytes = loadingCache.get(wasmUrl);
-
-                final DefaultLinkingContext linkingContext = DefaultLinkingContext.builder()
-                        .addHostFunction("env", WASM_FUNCTION_MAPPING_DICTIONARY_ADD,
-                                new ValueType[]{ValueType.I32}, new ValueType[]{ValueType.I64},
-                                mappingDictionaryAddHostFunction())
-                        .addHostFunction("env", WASM_FUNCTION_MAPPING_DICTIONARY_GET,
-                                new ValueType[]{ValueType.I64}, new ValueType[]{ValueType.I32},
-                                mappingDictionaryGetHostFunction())
-                        .build();
-                this.module = engine.loadModule(bytes);
-                this.instance = module.instantiate(linkingContext);
-                break;
+        // Reuse the shared engine + cached component; do NOT hold the engine
+        // in `this.engine` since we don't want close() to release the shared
+        // resources. The instance is per-call.
+        this.component = null;
+        this.engine = null;
+        final Component cached;
+        try {
+            cached = componentModeComponentFor(wasmUrl);
+        } catch (IOException ioe) {
+            throw new RuntimeException(ioe);
         }
+        // Capability-policy — resolve the effective grant against
+        // the RDF-backed policy store before wiring the linker so
+        // we only wire interfaces the grant permits. When the
+        // master gate is off (default), {@link
+        // CapabilityEnforcer#activePolicy} returns empty and we
+        // fall through to the pre-capability code path that wires
+        // every interface unconditionally.
+        //
+        // The resolver may throw LoadTimeDenied /
+        // UnknownExtension / PolicyStoreUnavailable — all
+        // StardogException subtypes, so they unwind this
+        // constructor and Call.evaluate /
+        // WebFunctionServiceOperator surface them as-is
+        // (mirroring WfBudgetError).
+        final Optional<CapabilityEnforcer> enforcer = CapabilityEnforcer.activePolicy();
+        final CapabilityGrant grant;
+        if (enforcer.isPresent()) {
+            final CallbackContext preCtx = CallbackContext.current();
+            grant = enforcer.get().preInvocation(cached, wasmUrl);
+            if (preCtx != null) {
+                preCtx.setCapabilityGrant(grant);
+                // Phase 4 — capture the invoker's Shiro subject so
+                // HostCallbacks can wrap Stardog operations in
+                // ShiroUtils.executeAs(subject, ...). Null when
+                // the invoker is anonymous; the per-callback wrap
+                // consults webfunctions.capability.anonymous-policy
+                // to decide the fallback.
+                preCtx.setInvokerSubject(currentInvokerSubjectOrNull());
+            }
+            // Capability-ask wave — extract, parse, and record
+            // the extension's declared ask so the admin has a
+            // SPARQL-queryable review surface, and the warn-on-
+            // undeclared diagnostic in HostCallbacks has an ask
+            // to compare against ({@code capability-ask.md}
+            // §§6+8). Best-effort: section absent or parse
+            // failure both proceed with a warning per §6 — the
+            // grant still gates execution regardless.
+            extractAndRecordAsk(wasmUrl, preCtx);
+        } else {
+            grant = null;
+        }
+        final DefaultLinkingContext.Builder componentLinker = DefaultLinkingContext.builder();
+        if (WebFunctionConfig.callbackEnabled()) {
+            // tegmentum:webfunction/graph-callbacks@0.1.0 —
+            // base-substrate graph callback surface for guests
+            // targeting `world extension-with-host-callbacks`.
+            // Signatures differ from the legacy shape:
+            // execute-query takes one string (no bindings, no
+            // max-rows) and returns `result<query-result,
+            // graph-call-error>`; execute-update takes one string
+            // and returns `result<_, graph-call-error>`. Error
+            // discrimination lifts MalformedQuery onto syntax-error
+            // and Shiro auth exceptions onto not-permitted, with
+            // backend-error preserved as the default. Gated behind
+            // the webfunctions.callback.enabled knob.
+            //
+            // The legacy stardog:webfunction/host@0.3.x-0.4.0
+            // registrations that used to sit here were dead code
+            // (zero consumers on the shape) and were retired; see
+            // webfunction-wit/hostcallbacks-legacy-retirement.md.
+            if (grant == null || grant.allowsInterface("graph-callbacks")) {
+                componentLinker.addWitHostFunction(
+                    "tegmentum:webfunction/graph-callbacks@0.1.0#execute-query",
+                    HostCallbacks.graphExecuteQuery());
+                componentLinker.addWitHostFunction(
+                    "tegmentum:webfunction/graph-callbacks@0.1.0#execute-update",
+                    HostCallbacks.graphExecuteUpdate());
+            }
+        }
+        // tegmentum:webfunction/http-callbacks@0.1.0 —
+        // outbound HTTP for guests reaching services outside SPARQL
+        // (vector-index endpoints, LLM inference, blob stores).
+        // Impl uses JDK-native java.net.http.HttpClient — no
+        // external HTTP dep needed. Registered outside the
+        // callback-enabled gate because the flag controls
+        // re-entering the graph; HTTP reaches external services.
+        if (grant == null || grant.allowsInterface("http-callbacks")) {
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/http-callbacks@0.1.0#http-get",
+                HostCallbacks.httpGet());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/http-callbacks@0.1.0#http-post-json",
+                HostCallbacks.httpPostJsonV1());
+        }
+        // tegmentum:webfunction/wasm-callbacks@0.1.0 —
+        // sub-component dispatch. MVP registers both invoke-wasm
+        // (scalar-return) and invoke-wasm-service (list<binding>-
+        // return) as not-permitted stubs so guests importing the
+        // interface can link. Full JVM-host component composition
+        // is separate future work; a guest that reaches these
+        // callbacks receives a typed policy denial with a
+        // descriptive message instead of a link-time trap.
+        if (grant == null || grant.allowsInterface("wasm-callbacks")) {
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm",
+                HostCallbacks.invokeWasmV1());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm-service",
+                HostCallbacks.invokeWasmService());
+        }
+        this.instance = cached.instantiate(
+                componentLinker.build(),
+                WebFunctionConfig.componentConfigFromSystemProperties());
     }
 
     /**
@@ -492,7 +466,7 @@ public class StardogWasmInstance implements Closeable {
                 if (!built.capabilities().supportsComponents()) {
                     built.close();
                     throw new IllegalStateException(
-                            WebFunctionConfig.PROP_ENGINE_MODE + "=component but engine '"
+                            "webfunction plugin requires component-model support; engine '"
                                     + built.info().engineId() + "' does not support components");
                 }
                 COMPONENT_MODE_SHARED_ENGINE = built;
@@ -670,91 +644,38 @@ public class StardogWasmInstance implements Closeable {
     }
 
     public Cardinality getCardinality(final Cardinality inputCardinality, List<Value> args) {
-        if (isComponentMode()) {
-            // `cardinality-estimate` lives on the stardog-extension overlay
-            // world (planner interface), not the base sparql-extension world.
-            // Test components targeting the base world only cannot answer;
-            // return the input cardinality (pessimistic identity estimate)
-            // so the planner sees a valid Cardinality object rather than a
-            // trap. Module mode still calls the real export below.
-            return inputCardinality;
-        }
-        try {
-            final WasmMemoryRef input = this.writeToWasmMemoryWithCardinality("memory", inputCardinality, args.toArray(new Value[0]));
-
-            final Function evaluateFunction = instance.function(WASM_FUNCTION_CARDINALITY_ESTIMATE).get();
-            final Integer output_pointer = ((Number) evaluateFunction.invoke(input.addr)).intValue();
-            free(input);
-            try (final SelectQueryResult selectQueryResult = readFromWasmMemorySelectQueryResult("memory", output_pointer)) {
-                if (selectQueryResult.hasNext()) {
-                    final BindingSet bs = selectQueryResult.next();
-                    return Cardinality.of(Literal.longValue((Literal) bs.get("cardinality")), Accuracy.valueOf(((Literal) bs.get("accuracy")).label()));
-                } else {
-                    throw new PlanException("Unable to retrieve cardinality estimate");
-                }
-            }
-        } catch (IOException e1) {
-            throw new PlanException(e1);
-        }
+        // `cardinality-estimate` lives on the stardog-extension overlay
+        // world (planner interface), not the base sparql-extension world.
+        // Test components targeting the base world only cannot answer;
+        // return the input cardinality (pessimistic identity estimate)
+        // so the planner sees a valid Cardinality object rather than a trap.
+        return inputCardinality;
     }
 
     public SelectQueryResult evaluate(final Value... values) throws IOException {
-        if (isComponentMode()) {
-            stampComponentInstanceOnCurrentContext();
-            return componentExtensionCall(values);
-        }
-        final WasmMemoryRef input = writeToWasmMemory("memory", values);
-
-        final Function evaluateFunction = instance.function(WASM_FUNCTION_EVALUATE).get();
-        final Integer output_pointer = ((Number) evaluateFunction.invoke(input.addr)).intValue();
-        free(input);
-        return readFromWasmMemorySelectQueryResult("memory", output_pointer);
+        stampComponentInstanceOnCurrentContext();
+        return componentExtensionCall(values);
     }
 
     public SelectQueryResult doc() throws IOException {
-        if (isComponentMode()) {
-            // `doc` lives on the stardog-extension overlay world, not the base
-            // sparql-extension world. Test components target the base world only,
-            // so component-mode `doc()` has no export to dispatch into. Return
-            // an empty binding-sets rather than trap — module-mode still serves
-            // the real doc export for callers that need it.
-            return new SelectQueryResultImpl(java.util.Collections.emptyList(), java.util.Collections.emptyList());
-        }
-        final Function evaluateFunction = instance.function(WASM_FUNCTION_DOC).get();
-        final Integer output_pointer = ((Number) evaluateFunction.invoke()).intValue();
-        return readFromWasmMemorySelectQueryResult("memory", output_pointer);
+        // `doc` lives on the stardog-extension overlay world, not the base
+        // sparql-extension world. Test components target the base world only,
+        // so `doc()` has no export to dispatch into. Return an empty
+        // binding-sets rather than trap.
+        return new SelectQueryResultImpl(java.util.Collections.emptyList(), java.util.Collections.emptyList());
     }
 
     public SelectQueryResult compute(final Value[] values, long multiplicity) throws IOException {
-        if (isComponentMode()) {
-            stampComponentInstanceOnCurrentContext();
-            componentAggregateStep(values, multiplicity);
-            // aggregate.step returns void; the materialized value is fetched
-            // separately via aggregateGetValue() through resource.finish.
-            return new SelectQueryResultImpl(java.util.Collections.emptyList(), java.util.Collections.emptyList());
-        }
-        final WasmMemoryRef input = writeToWasmMemoryWithMultiplicity("memory", Arrays.stream(values).toArray(Value[]::new), multiplicity);
-
-        final Function evaluateFunction = instance.function(WASM_FUNCTION_AGGREGATE).get();
-        final Integer output_pointer = ((Number) evaluateFunction.invoke(input.addr)).intValue();
-        free(input);
-        return readFromWasmMemorySelectQueryResult("memory", output_pointer);
+        stampComponentInstanceOnCurrentContext();
+        componentAggregateStep(values, multiplicity);
+        // aggregate.step returns void; the materialized value is fetched
+        // separately via aggregateGetValue() through resource.finish.
+        return new SelectQueryResultImpl(java.util.Collections.emptyList(), java.util.Collections.emptyList());
     }
 
     public SelectQueryResult aggregateGetValue() {
-        if (isComponentMode()) {
-            stampComponentInstanceOnCurrentContext();
-            return componentAggregateFinish();
-        }
-        final Function evaluateFunction = instance.function(WASM_FUNCTION_GET_VALUE).get();
-        final Integer output_pointer = ((Number) evaluateFunction.invoke()).intValue();
-        return readFromWasmMemorySelectQueryResult("memory", output_pointer);
-    }
-
-    private boolean isComponentMode() {
-        // Component mode uses a shared cached component (not held on `this`),
-        // so distinguish by mode config rather than by nullness of `component`.
-        return WebFunctionConfig.engineMode() == WebFunctionConfig.EngineMode.COMPONENT;
+        stampComponentInstanceOnCurrentContext();
+        return componentAggregateFinish();
     }
 
     /**

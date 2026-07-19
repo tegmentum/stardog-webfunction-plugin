@@ -4,8 +4,6 @@ import com.stardog.stark.Literal;
 import com.stardog.stark.Value;
 import com.stardog.stark.query.BindingSet;
 import com.stardog.stark.query.SelectQueryResult;
-import org.junit.After;
-import org.junit.Before;
 import org.junit.Test;
 
 import java.io.File;
@@ -30,16 +28,6 @@ public class TestCallbackDepth {
     private static final String WASM = System.getProperty("wf.debug.callback.depth.wasm",
             System.getProperty("user.home")
                     + "/git/webfunctions/target/wasm32-wasip1/release/debug_callback_depth.wasm");
-
-    @Before
-    public void enableComponentMode() {
-        System.setProperty(WebFunctionConfig.PROP_ENGINE_MODE, "component");
-    }
-
-    @After
-    public void resetComponentMode() {
-        System.clearProperty(WebFunctionConfig.PROP_ENGINE_MODE);
-    }
 
     @Test
     public void depthIsZeroAtTopLevel() throws Exception {

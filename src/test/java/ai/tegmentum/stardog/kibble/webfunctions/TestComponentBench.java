@@ -2,7 +2,6 @@ package ai.tegmentum.stardog.kibble.webfunctions;
 
 import com.stardog.stark.Values;
 import com.stardog.stark.query.SelectQueryResult;
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -12,21 +11,18 @@ import java.net.URL;
 import static org.junit.Assume.assumeTrue;
 
 /**
- * Micro-benchmark comparing module-mode and component-mode {@code evaluate}
- * throughput and cold-instantiation cost, using the same {@code to_upper}
- * functional operation.
+ * Micro-benchmark of component-mode {@code evaluate} throughput and
+ * cold-instantiation cost using the {@code example-uppercase-extension}
+ * component.
  *
  * Not part of the standard test cycle. Runs only when {@code -Dbench=1} is set:
  * {@code mvn test -Dtest=TestComponentBench -Dbench=1}. Numbers are hand-rolled
  * System.nanoTime measurements after a fixed warm-up — first-order signal, not
- * a JMH-quality run. Interpret ratios rather than absolute figures.
+ * a JMH-quality run.
  */
 public class TestComponentBench {
 
-    private static final String MODULE_WASM =
-            "src/test/rust/target/wasm32-unknown-unknown/release/to_upper.wasm";
-    // Component wasm sourced from the shared webfunctions target — retired
-    // the stardog-plugin-local to_upper_component crate. Locator:
+    // Component wasm sourced from the shared webfunctions target. Locator:
     // EXAMPLE_UPPERCASE_WASM env override, else fall back to the well-known
     // path under ~/git/webfunctions.
     private static final String COMPONENT_WASM = resolveComponentWasm();
@@ -48,43 +44,25 @@ public class TestComponentBench {
     public void gate() {
         assumeTrue("bench is off; enable with -Dbench=1",
                 "1".equals(System.getProperty("bench")));
-        assumeTrue("module wasm not built (cd src/test/rust && cargo make build)",
-                new File(MODULE_WASM).exists());
         assumeTrue("example-uppercase-extension wasm not built (cd ~/git/webfunctions "
                         + "&& cargo component build --release -p example-uppercase-extension "
                         + "--target wasm32-wasip2), or set EXAMPLE_UPPERCASE_WASM to the built path",
                 new File(COMPONENT_WASM).exists());
     }
 
-    @After
-    public void reset() {
-        System.clearProperty(WebFunctionConfig.PROP_ENGINE_MODE);
-    }
-
     @Test
     public void benchEvaluate() throws Exception {
-        final long componentNs = timeEvaluate("component", COMPONENT_WASM);
-        final long moduleNs = timeEvaluate("module", MODULE_WASM);
-
+        final long componentNs = timeEvaluate(COMPONENT_WASM);
         report("evaluate", "component", componentNs);
-        report("evaluate", "module   ", moduleNs);
-        System.out.printf("evaluate: component / module = %.2fx%n",
-                (double) componentNs / moduleNs);
     }
 
     @Test
     public void benchInstantiation() throws Exception {
-        final long componentNs = timeInstantiation("component", COMPONENT_WASM);
-        final long moduleNs = timeInstantiation("module", MODULE_WASM);
-
+        final long componentNs = timeInstantiation(COMPONENT_WASM);
         report("instantiate", "component", componentNs);
-        report("instantiate", "module   ", moduleNs);
-        System.out.printf("instantiate: component / module = %.2fx%n",
-                (double) componentNs / moduleNs);
     }
 
-    private static long timeEvaluate(final String mode, final String wasmPath) throws Exception {
-        System.setProperty(WebFunctionConfig.PROP_ENGINE_MODE, mode);
+    private static long timeEvaluate(final String wasmPath) throws Exception {
         final URL url = new File(wasmPath).toURI().toURL();
 
         try (StardogWasmInstance instance = new StardogWasmInstance(url)) {
@@ -105,11 +83,10 @@ public class TestComponentBench {
         }
     }
 
-    private static long timeInstantiation(final String mode, final String wasmPath) throws Exception {
-        System.setProperty(WebFunctionConfig.PROP_ENGINE_MODE, mode);
+    private static long timeInstantiation(final String wasmPath) throws Exception {
         final URL url = new File(wasmPath).toURI().toURL();
 
-        // Warm the module/component byte cache and JIT.
+        // Warm the component byte cache and JIT.
         for (int i = 0; i < 3; i++) {
             new StardogWasmInstance(url).close();
         }

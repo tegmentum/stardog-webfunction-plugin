@@ -57,7 +57,6 @@ public class TestAttributionRing {
     @Before
     public void resetRingAndConfig() {
         AttributionRing.INSTANCE.clear();
-        System.setProperty(WebFunctionConfig.PROP_ENGINE_MODE, "component");
         // Explicit false — the default, but stamp it so leaks from prior
         // tests don't accidentally leave the ring enabled.
         System.setProperty(WebFunctionConfig.PROP_ATTRIBUTION_LOG_ENABLED, "false");
@@ -66,7 +65,6 @@ public class TestAttributionRing {
     @After
     public void resetAll() {
         AttributionRing.INSTANCE.clear();
-        System.clearProperty(WebFunctionConfig.PROP_ENGINE_MODE);
         System.clearProperty(WebFunctionConfig.PROP_FUEL_ENABLED);
         System.clearProperty(WebFunctionConfig.PROP_FUEL_PER_INVOCATION_MAX);
         System.clearProperty(WebFunctionConfig.PROP_FUEL_HOST_CALLBACK_TOLL);
