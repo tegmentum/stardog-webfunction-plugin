@@ -76,8 +76,26 @@ public final class WebFunctionServiceOperator extends AbstractOperator implement
         // filter-function wf:call binds via Call.evaluate but without an
         // ExecutionContext, so execute-query is unavailable on that path.
         final CallbackContext cbCtx = CallbackContext.bind(mExecutionContext);
+        // Fuel metering Phase 1 — stamp per-invocation budget + extension
+        // URI on this frame's CallbackContext so host-callback tolls
+        // charge against it and typed error attribution names the wasm
+        // extension being invoked.
+        if (WebFunctionConfig.fuelEnabled()) {
+            cbCtx.setFuelMeteringContext(
+                    wasmIRI == null ? "" : wasmIRI.toString(),
+                    WebFunctionConfig.fuelPerInvocationMax(),
+                    WebFunctionConfig.fuelHostCallbackToll());
+        }
         try {
             return computeNextInternal();
+        } catch (WfBudgetError e) {
+            // Already-typed — rethrow so Stardog's query engine surfaces
+            // it as a plugin error with the JSON payload intact.
+            throw e;
+        } catch (RuntimeException e) {
+            final WfBudgetError typed = FuelTrapMapper.mapOrNull(e, cbCtx);
+            if (typed != null) throw typed;
+            throw e;
         } finally {
             CallbackContext.unbindIfOutermost(cbCtx);
         }

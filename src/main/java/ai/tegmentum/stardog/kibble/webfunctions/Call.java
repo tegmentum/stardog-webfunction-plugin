@@ -110,12 +110,32 @@ public final class Call extends AbstractExpression implements UserDefinedFunctio
                             // dictionary the caller is using.
                             final CallbackContext cbCtx =
                                 CallbackContext.bind(valueSolution.getDictionary());
+                            // Fuel metering Phase 1 — stamp the per-invocation
+                            // budget + extension URI on the CallbackContext so
+                            // host-callback tolls charge against this frame's
+                            // budget and typed error attribution knows which
+                            // extension tripped the cap.
+                            if (WebFunctionConfig.fuelEnabled()) {
+                                cbCtx.setFuelMeteringContext(
+                                        values[0] == null ? "" : values[0].toString(),
+                                        WebFunctionConfig.fuelPerInvocationMax(),
+                                        WebFunctionConfig.fuelHostCallbackToll());
+                            }
                             try (StardogWasmInstance stardogWasmInstance = StardogWasmInstance.from(values[0], valueSolution.getDictionary())) {
                                 try(final SelectQueryResult selectQueryResult = stardogWasmInstance.evaluate(Arrays.stream(values).skip(1).toArray(Value[]::new))) {
                                     return stardogWasmInstance.selectQueryResultToValueOrError(selectQueryResult);
                                 }
                             } catch (IOException | ExecutionException ex) {
+                                final WfBudgetError typed = FuelTrapMapper.mapOrNull(ex, cbCtx);
+                                if (typed != null) throw typed;
                                 return ValueOrError.Error;
+                            } catch (RuntimeException ex) {
+                                // Direct throws from CallbackContext.chargeToll
+                                // (WfBudgetError.HostCallbackTollExhausted) land
+                                // here too — same promotion path.
+                                final WfBudgetError typed = FuelTrapMapper.mapOrNull(ex, cbCtx);
+                                if (typed != null) throw typed;
+                                throw ex;
                             } finally {
                                 CallbackContext.unbindIfOutermost(cbCtx);
                             }
