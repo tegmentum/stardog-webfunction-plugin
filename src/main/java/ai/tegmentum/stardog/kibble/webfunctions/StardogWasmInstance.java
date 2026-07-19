@@ -121,7 +121,21 @@ public class StardogWasmInstance implements Closeable {
         if (value instanceof Literal) {
             return new URL(((Literal) value).label());
         } else {
-            return new URL(value.toString() + '/' + Version.PLUGIN_VERSION);
+            final String raw = value.toString();
+            // Content-addressed sha256:// URLs are already pinned by
+            // digest; appending the plugin version would defeat the
+            // content-addressing invariant (same content → same URL)
+            // and would push the resolved key past the artifact
+            // store's expected sha256://<64-hex> shape.
+            if (raw.startsWith("sha256://") || raw.startsWith("sha256:")) {
+                // Register the sha256 URL handler package if not
+                // already — idempotent, no-op if ComposeAdmin.wire
+                // has run. Necessary in embedded/direct test paths
+                // where the admin bootstrap hasn't fired.
+                ai.tegmentum.stardog.kibble.webfunctions.compose.Sha256ArtifactUrlHandler.install();
+                return new URL(raw);
+            }
+            return new URL(raw + '/' + Version.PLUGIN_VERSION);
         }
     }
 
