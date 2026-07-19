@@ -7,6 +7,7 @@ import com.complexible.stardog.api.ConnectionConfiguration;
 import com.complexible.stardog.api.admin.AdminConnection;
 import com.complexible.stardog.api.admin.AdminConnectionConfiguration;
 import com.stardog.stark.query.SelectQueryResult;
+import java.util.List;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -18,6 +19,7 @@ import org.testcontainers.containers.Container;
 
 import java.io.File;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assume.assumeTrue;
 
 /**
@@ -186,6 +188,41 @@ public class CapabilityAskIT {
         // the capability attribution ring (via /audit-capability.log)
         // carries rows for both invocations with the correct
         // Shiro principal.
+    }
+
+    // ---- I5 --------------------------------------------------------------
+
+    @Test
+    public void i5_askAutoInsertedIntoPolicyDbOnLoad() {
+        // Any non-empty policy triple keeps the resolver from routing
+        // through unknown-extension-policy=deny. Uppercase imports no
+        // callback interface so the grant intersection is empty; the
+        // trivial http-callbacks grant is enough to make the extension
+        // "known" without meaningfully affecting dispatch.
+        CapabilityPolicyDbHelpers.grantInterfaces(SERVER_URL, UPPERCASE_URL,
+                List.of(CapabilityVocabulary.IFACE_HTTP_CALLBACKS),
+                List.of());
+
+        invokeUpper();
+
+        final List<String[]> rows = CapabilityPolicyDbHelpers.readAskTriples(
+                SERVER_URL, UPPERCASE_URL);
+        assertThat(rows).as("ask triples should have been auto-inserted").isNotEmpty();
+
+        // Assert every predicate the source Turtle declared shows up
+        // in the round-tripped set. The ask body:
+        //   cap:asksInterface cap:HttpCallbacks
+        //   cap:asksHost      "api.example.com"
+        //   cap:asksRationale "..."
+        assertThat(rows).anyMatch(pv ->
+                CapabilityVocabulary.CAP_ASKS_INTERFACE.equals(pv[0])
+                && CapabilityVocabulary.IFACE_HTTP_CALLBACKS.equals(pv[1]));
+        assertThat(rows).anyMatch(pv ->
+                CapabilityVocabulary.CAP_ASKS_HOST.equals(pv[0])
+                && "api.example.com".equals(pv[1]));
+        assertThat(rows).anyMatch(pv ->
+                CapabilityVocabulary.CAP_ASKS_RATIONALE.equals(pv[0])
+                && pv[1].contains("Integration-test ask for uppercase"));
     }
 
     // ---- helpers ---------------------------------------------------------
