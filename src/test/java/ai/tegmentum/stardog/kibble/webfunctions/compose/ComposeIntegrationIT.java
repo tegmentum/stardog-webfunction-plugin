@@ -9,7 +9,11 @@ import com.complexible.stardog.api.ConnectionConfiguration;
 import com.complexible.stardog.api.admin.AdminConnection;
 import com.complexible.stardog.api.admin.AdminConnectionConfiguration;
 import com.stardog.stark.Literal;
+import com.stardog.stark.Statement;
 import com.stardog.stark.Value;
+import com.stardog.stark.io.ParserOptions;
+import com.stardog.stark.io.RDFFormats;
+import com.stardog.stark.io.RDFParsers;
 import com.stardog.stark.query.BindingSet;
 import com.stardog.stark.query.SelectQueryResult;
 import org.testcontainers.utility.MountableFile;
@@ -23,9 +27,12 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assume.assumeTrue;
@@ -475,6 +482,75 @@ public class ComposeIntegrationIT {
         assertThat(rowsB)
                 .as("plan B must NOT surface the plan-A CID URL")
                 .noneMatch(pv -> cidUrlA.equals(pv[1]));
+    }
+
+    // ---- IE5 ------------------------------------------------------------
+
+    /**
+     * IE5 — {@code planToTurtle} produces a valid Turtle document that
+     * parses cleanly via Stardog's Stark parser and whose triples
+     * reference the source plan's key fields (root component id and
+     * declared version).
+     *
+     * <p>Uses the same orchestrator instance as IE1/IE2 but bypasses
+     * the container — the Turtle projection is a pure guest-side
+     * plan-shape serialization that does not require any Kernel or
+     * RDF sink to observe. Contract under test:
+     * <ul>
+     *   <li>non-empty response;</li>
+     *   <li>parses via {@link RDFParsers#read} with the Turtle
+     *       format — same parser {@link ComposePolicyStoreWriter#write}
+     *       uses on the ingest side, so a passing parse here is
+     *       evidence the ingest pipeline could round-trip the doc;</li>
+     *   <li>the parsed triple set carries a subject-position IRI
+     *       matching the plan IRI we handed in;</li>
+     *   <li>the concrete Turtle string carries the root-component id
+     *       literal — the orchestrator's plan-to-turtle emitter has to
+     *       include the plan's core fields for admin-review to be
+     *       meaningful.</li>
+     * </ul>
+     */
+    @Test
+    public void ie5_planToTurtleProducesValidTurtle() {
+        final String planIri = "urn:test:compose-it:plan:ie5";
+        final PlanV1 plan = TestComposePlanFixtures.minimalPlan("uppercase", FIXTURE_WASM_DIGEST);
+        final byte[] planCbor = PlanV1Cbor.encode(plan);
+
+        final String turtle = CLIENT.planToTurtleCbor(planCbor, planIri);
+        assertThat(turtle)
+                .as("orchestrator must return a non-empty Turtle document")
+                .isNotBlank();
+
+        // Parse via Stark — same parser the production policy-store
+        // writer uses. A parse failure would surface the doc as
+        // structurally-invalid Turtle.
+        final Set<Statement> statements;
+        try (ByteArrayInputStream in = new ByteArrayInputStream(
+                turtle.getBytes(StandardCharsets.UTF_8))) {
+            statements = RDFParsers.read(in, RDFFormats.TURTLE,
+                    ParserOptions.baseIRI(planIri));
+        } catch (java.io.IOException | RuntimeException parseFailure) {
+            throw new AssertionError(
+                    "orchestrator-produced Turtle failed to parse via Stark: "
+                            + parseFailure.getMessage()
+                            + "\n---- turtle ----\n" + turtle + "\n---- end ----",
+                    parseFailure);
+        }
+        assertThat(statements)
+                .as("parsed Turtle must produce at least one statement")
+                .isNotEmpty();
+        assertThat(statements)
+                .as("plan IRI must appear as a subject in the parsed statements")
+                .anyMatch(s -> planIri.equals(s.subject().toString()));
+
+        // Concrete plan field content sanity — the orchestrator's
+        // plan-to-turtle serializes the root component id. Grep the raw
+        // Turtle instead of walking the parsed triples so a predicate
+        // rename in a future orchestrator revision is caught as a plain
+        // string-match failure rather than a semantic drift assertion.
+        assertThat(turtle)
+                .as("Turtle must mention the plan's root component id")
+                .contains("uppercase");
     }
 
     // ---- helpers --------------------------------------------------------
