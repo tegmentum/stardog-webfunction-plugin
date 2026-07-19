@@ -36,7 +36,7 @@ import java.nio.file.Path;
  * on the returned instance if the underlying provider is single-threaded
  * (wasmtime4j surfaces per-instance mutability via its own store).
  */
-public final class ComposeOrchestratorInstance implements AutoCloseable {
+public class ComposeOrchestratorInstance implements AutoCloseable {
 
     private final ComposeOrchestratorLoader loader;
 

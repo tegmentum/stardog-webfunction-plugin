@@ -57,9 +57,16 @@ public final class Sha256ArtifactUrlHandler extends URLStreamHandler {
         // encounters a "sha256://" URL. This is additive and idempotent.
         final String key = "java.protocol.handler.pkgs";
         final String existing = System.getProperty(key);
-        final String pkg = "ai.tegmentum.stardog.kibble.webfunctions";
-        // The JDK scans <pkg>.<scheme>.Handler; register a passthrough
-        // Handler under the compose sub-package to satisfy that.
+        // Compute the package name from the sibling Handler class rather
+        // than hard-coding a string literal — Maven Shade relocates
+        // class packages but not string literals, so a hard-coded path
+        // would drift under the shaded plugin jar. Handler lives under
+        // `<parent>.sha256`; we register the `<parent>` package.
+        final String handlerPkg =
+                ai.tegmentum.stardog.kibble.webfunctions.sha256.Handler.class
+                        .getPackage().getName();
+        final int lastDot = handlerPkg.lastIndexOf('.');
+        final String pkg = lastDot > 0 ? handlerPkg.substring(0, lastDot) : handlerPkg;
         if (existing == null || existing.isEmpty()) {
             System.setProperty(key, pkg);
         } else if (!contains(existing, pkg)) {

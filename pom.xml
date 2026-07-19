@@ -169,6 +169,15 @@
 
     <build>
         <finalName>tegmentum-stardog-${project.artifactId}-${project.version}</finalName>
+        <!--
+            Compose Wave B: bundles the compose orchestrator wasm at
+            src/main/resources/webfunctions/compose_orchestrator.wasm
+            (~12 MB uncompressed). Included in the shaded plugin jar via
+            default Maven resource inclusion; adds roughly 12 MB to the
+            final jar. Acceptable for Stardog plugin distribution — the
+            wasm is content-addressed at load time so the resource is
+            never duplicated at runtime.
+        -->
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

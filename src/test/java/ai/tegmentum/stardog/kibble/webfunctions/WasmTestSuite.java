@@ -10,6 +10,11 @@ import com.complexible.stardog.api.admin.AdminConnection;
 import com.complexible.stardog.api.admin.AdminConnectionConfiguration;
 import com.google.common.io.Files;
 import ai.tegmentum.stardog.kibble.webfunctions.*;
+import ai.tegmentum.stardog.kibble.webfunctions.compose.TestComposedArtifactStore;
+import ai.tegmentum.stardog.kibble.webfunctions.compose.TestComposeOrchestratorClient;
+import ai.tegmentum.stardog.kibble.webfunctions.compose.TestComposePolicyStoreWriter;
+import ai.tegmentum.stardog.kibble.webfunctions.compose.TestPlanV1Cbor;
+import ai.tegmentum.stardog.kibble.webfunctions.compose.TestSha256UrlLoader;
 import junit.framework.TestCase;
 import org.apache.commons.io.IOUtils;
 import org.junit.AfterClass;
@@ -43,6 +48,14 @@ import java.nio.charset.Charset;
     TestCapabilityPolicyStore.class,
     TestCapabilityVocabulary.class,
     TestCompose.class,
+    // Compose Wave B unit tests — pure JVM, no Stardog needed but
+    // discovered through the suite so `mvn test` runs them alongside
+    // the rest of the plugin's tests.
+    TestComposedArtifactStore.class,
+    TestComposeOrchestratorClient.class,
+    TestComposePolicyStoreWriter.class,
+    TestPlanV1Cbor.class,
+    TestSha256UrlLoader.class,
     TestFilter.class,
     TestHostAllowlist.class,
     TestHostCallbacksInvokerSubject.class,

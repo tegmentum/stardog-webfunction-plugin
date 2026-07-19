@@ -26,7 +26,7 @@ import java.nio.file.StandardCopyOption;
  * that want to re-extract (e.g. plugin upgrade in place) delete the
  * extracted wasm first and call {@link #ensureExtracted()} again.
  */
-public final class ComposeOrchestratorLoader {
+public class ComposeOrchestratorLoader {
 
     /** Relative path of the bundled orchestrator wasm inside the plugin jar. */
     public static final String CLASSPATH_RESOURCE =
