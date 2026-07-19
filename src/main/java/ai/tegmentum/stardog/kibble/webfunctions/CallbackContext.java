@@ -167,8 +167,9 @@ public final class CallbackContext {
      * {@link ComponentInstance#consumeFuel(long)}. Called by
      * {@link StardogWasmInstance} right before the guest export dispatches;
      * cleared when the CallbackContext is unbound. Null is a valid state
-     * (module-mode dispatch has no ComponentInstance to stamp; falls back to
-     * the Java-side toll counter).
+     * (isolated unit-test / embedded direct-instantiation flows that never
+     * stamp a ComponentInstance; the toll then falls back to the Java-side
+     * counter).
      */
     public void setComponentInstance(final ComponentInstance componentInstance) {
         this.componentInstance = componentInstance;
@@ -224,9 +225,10 @@ public final class CallbackContext {
 
     /**
      * Query the store's actual fuel consumption for the currently-stamped
-     * {@link ComponentInstance}, or {@code -1} when unavailable (module mode,
-     * no instance stamped, or provider does not support
-     * {@link ComponentInstance#fuelConsumed()}). Used by {@link FuelTrapMapper}
+     * {@link ComponentInstance}, or {@code -1} when unavailable (no instance
+     * stamped, or provider does not support
+     * {@link ComponentInstance#fuelConsumed()} — non-wasmtime providers like
+     * endive / chicory / wamr / graalwasm). Used by {@link FuelTrapMapper}
      * and {@link UserFuelPolicy} to report real fuel usage in typed errors and
      * post-invocation accounting instead of the Java-side lower-bound toll.
      */
@@ -310,9 +312,10 @@ public final class CallbackContext {
      * {@link ComponentInstance#consumeFuel(long)} when the active provider
      * supports it (wasmtime as of webassembly4j 2.4.3), so the toll
      * exhausts the same budget wasm instructions burn against. Providers
-     * that throw {@link UnsupportedFeatureException} (or the module-mode
-     * dispatch path, which has no ComponentInstance to charge against)
-     * fall through to the Java-side {@link #tollUsed} counter.
+     * that throw {@link UnsupportedFeatureException} (endive, chicory,
+     * wamr, graalwasm — anything non-wasmtime), or callers that never
+     * stamped a ComponentInstance (isolated unit-test paths), fall
+     * through to the Java-side {@link #tollUsed} counter.
      *
      * <p>If the toll cannot be paid — real-store exhaustion, Java-side
      * overflow, or provider deduction failure — stamps
@@ -352,7 +355,7 @@ public final class CallbackContext {
                         tollHostCallbackToll);
             }
         }
-        // Java-side fallback (module-mode, or provider without consumeFuel).
+        // Java-side fallback (no ComponentInstance stamped, or provider without consumeFuel).
         if (tollUsed + tollHostCallbackToll > tollBudget) {
             tollExhaustedCallback = callbackName;
             throw new WfBudgetError.HostCallbackTollExhausted(

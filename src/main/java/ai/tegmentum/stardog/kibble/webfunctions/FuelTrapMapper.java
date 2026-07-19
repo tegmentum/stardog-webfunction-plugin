@@ -63,7 +63,7 @@ final class FuelTrapMapper {
             // ComponentInstance.fuelConsumed() through CallbackContext. Prefer
             // the real value; fall back to the cap (upper bound — the guest
             // necessarily hit it to trap) when the provider returns the -1
-            // sentinel (module mode, non-wasmtime provider).
+            // sentinel (non-wasmtime provider without fuelConsumed support).
             final long consumed = ctx == null ? -1L : ctx.fuelConsumed();
             final long reportedConsumed = consumed >= 0L ? consumed : cap;
             if (ctx != null && ctx.tollExhaustedCallback() != null) {

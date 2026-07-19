@@ -160,7 +160,8 @@ public final class UserFuelPolicy {
      * {@code fuel_consumed} reading through {@link CallbackContext#fuelConsumed()}
      * when the provider supports it (wasmtime as of wasmtime4j 1.4.7 /
      * webassembly4j 2.4.3), falling back to {@code fallback} when the
-     * sentinel {@code -1} comes back (module mode, non-wasmtime provider).
+     * sentinel {@code -1} comes back (non-wasmtime provider without
+     * fuelConsumed support).
      *
      * <p>The fallback is caller-supplied so success paths can pass the
      * observed host-callback tolls ({@code Math.max(1, cbCtx.tollUsed())})
