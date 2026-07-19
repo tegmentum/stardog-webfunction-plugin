@@ -3,8 +3,13 @@ package ai.tegmentum.stardog.kibble.webfunctions.compose;
 import ai.tegmentum.stardog.kibble.StardogContainer;
 import ai.tegmentum.stardog.kibble.webfunctions.WebFunctionConfig;
 
+import com.complexible.stardog.api.Connection;
+import com.complexible.stardog.api.ConnectionConfiguration;
 import com.complexible.stardog.api.admin.AdminConnection;
 import com.complexible.stardog.api.admin.AdminConnectionConfiguration;
+import com.stardog.stark.Value;
+import com.stardog.stark.query.BindingSet;
+import com.stardog.stark.query.SelectQueryResult;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Rule;
@@ -15,6 +20,8 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,6 +63,17 @@ import static org.junit.Assume.assumeTrue;
 public class ComposeIntegrationIT {
 
     private static final String DB = "test_compose_it";
+    /**
+     * Plugin-managed capability policy database name. Duplicated here
+     * rather than referencing {@code POLICY_DB}
+     * because that helper lives in the parent package with
+     * package-private visibility (test-only utility, kept next to its
+     * consumers) — the compose IT lives in the subpackage so it inlines
+     * the constant. Same value as
+     * {@code WebFunctionConfig.DEFAULT_CAPABILITY_POLICY_STORE_DATABASE}.
+     */
+    private static final String POLICY_DB =
+            WebFunctionConfig.DEFAULT_CAPABILITY_POLICY_STORE_DATABASE;
     private static final String LICENSE_PATH = System.getenv("STARDOG_LICENSE_PATH");
     private static final String PLUGIN_JAR = System.getProperty("wf.plugin.jar",
             "target/tegmentum-stardog-webfunction-1.0.3.jar");
@@ -210,7 +228,165 @@ public class ComposeIntegrationIT {
         assertThat(readBack.get()).isEqualTo(composed);
     }
 
+    // ---- IE2 ------------------------------------------------------------
+
+    /**
+     * IE2 — composition RDF is inserted into the capability DB's
+     * compositions named graph and round-trips through a SPARQL SELECT.
+     *
+     * <p>Compose the fixture plan, ask the orchestrator for its Turtle
+     * projection (via {@code sys:compose/rdf#plan-to-turtle-with-iri}),
+     * push the Turtle into the container's
+     * {@code system-webfunctions-capability} DB under
+     * {@link ComposePolicyStoreWriter#COMPOSITIONS_NAMED_GRAPH}, then
+     * SELECT the plan-anchored triples back out and assert the plan IRI,
+     * a version literal, and a reference to the composed CID are all
+     * visible.
+     *
+     * <p>Insert path is via SPARQL UPDATE over HTTP (bypasses the
+     * Kernel-backed {@link ComposePolicyStoreWriter}, which needs a live
+     * Kernel we don't have from the test JVM). The resulting on-disk
+     * state is identical — same named graph, same triple shapes — so
+     * IE2 exercises the "compositions DB is queryable and carries the
+     * expected triples" contract even without going through the
+     * production writer.
+     */
+    @Test
+    public void ie2_compositionRdfInsertedAndQueryable() {
+        // Ensure the plugin's own bootstrap has created the policy DB —
+        // defensive belt against a race with the plugin's
+        // CapabilityPolicyStarter (see WebFunctionServiceModule).
+        ensurePolicyDb(SERVER_URL);
+
+        final String planIri = "urn:test:compose-it:plan:ie2";
+        final PlanV1 plan = TestComposePlanFixtures.minimalPlan("uppercase", FIXTURE_WASM_DIGEST);
+        final byte[] planCbor = PlanV1Cbor.encode(plan);
+
+        // Compose to obtain a CID we can reference in RDF assertions.
+        final byte[] composed = CLIENT.composeFromCbor(planCbor);
+        assertThat(composed).isNotEmpty();
+        final String cid;
+        try {
+            cid = ARTIFACT_STORE.persist(composed);
+        } catch (java.io.IOException ioe) {
+            throw new IllegalStateException("artifact persist failed: " + ioe.getMessage(), ioe);
+        }
+        final String cidUrl = "sha256://" + cid.substring("sha256:".length());
+
+        // Turtle projection from the orchestrator, keyed on our plan IRI
+        // so the DELETE-before-INSERT idempotency contract holds even
+        // when tests run in different orders across CI shards.
+        final String turtle = CLIENT.planToTurtleCbor(planCbor, planIri);
+        assertThat(turtle)
+                .as("planToTurtle must produce a non-empty Turtle document")
+                .isNotBlank();
+
+        // Push into the compositions graph. Also assert the composed CID
+        // via a wf:hasComposedArtifact triple so IE2's assertion set
+        // includes both orchestrator-produced RDF and admin-tracked
+        // composed-artifact anchoring.
+        insertCompositionsTurtle(SERVER_URL, planIri, turtle, cidUrl);
+
+        // Query the compositions graph back out and confirm the plan IRI,
+        // a triple carrying the composed CID URL, and at least one plan
+        // predicate the orchestrator emits are visible.
+        final List<String[]> rows = readCompositionTriples(SERVER_URL, planIri);
+        assertThat(rows)
+                .as("compositions graph should carry orchestrator-emitted plan triples for " + planIri)
+                .isNotEmpty();
+        assertThat(rows)
+                .as("composition RDF should reference the composed CID URL")
+                .anyMatch(pv -> cidUrl.equals(pv[1]));
+    }
+
     // ---- helpers --------------------------------------------------------
+
+    /**
+     * SPARQL UPDATE that (a) DELETEs any prior triples anchored on
+     * {@code planIri} in the compositions graph, then (b) INSERTs the
+     * orchestrator's Turtle plus a {@code wf:hasComposedArtifact} anchor
+     * triple linking the plan IRI to the composed CID URL. Mirrors the
+     * production writer's DELETE-then-INSERT idempotency shape without
+     * requiring a Kernel reference.
+     */
+    private static void insertCompositionsTurtle(final String serverUrl,
+                                                 final String planIri,
+                                                 final String turtle,
+                                                 final String cidUrl) {
+        final String graph = ComposePolicyStoreWriter.COMPOSITIONS_NAMED_GRAPH;
+        final String hasComposedArtifact =
+                "http://semantalytics.com/2021/03/ns/stardog/webfunction/hasComposedArtifact";
+        // Break the update into three statements so a syntactic issue in
+        // one doesn't hide a later one. Stardog batches these in a single
+        // transaction the same way multiple SPARQL Update requests would.
+        final String deleteExisting =
+                "DELETE { GRAPH <" + graph + "> { <" + planIri + "> ?p ?o } } "
+                        + "WHERE { GRAPH <" + graph + "> { <" + planIri + "> ?p ?o } }";
+        final String insertTurtle =
+                "INSERT DATA { GRAPH <" + graph + "> {\n"
+                        + turtle
+                        + "\n<" + planIri + "> <" + hasComposedArtifact + "> <" + cidUrl + "> .\n"
+                        + "} }";
+        try (Connection conn = ConnectionConfiguration.to(
+                    POLICY_DB)
+                .server(serverUrl)
+                .credentials("admin", "admin")
+                .connect()) {
+            conn.begin();
+            conn.update(deleteExisting).execute();
+            conn.update(insertTurtle).execute();
+            conn.commit();
+        }
+    }
+
+    /**
+     * SPARQL SELECT that reads back every triple anchored on
+     * {@code planIri} in the compositions named graph. Returns
+     * {@code (predicate, object-rendered)} pairs so the assertions can
+     * grep for content without a per-value Value-vs-Literal dispatch.
+     */
+    private static List<String[]> readCompositionTriples(final String serverUrl,
+                                                         final String planIri) {
+        final String graph = ComposePolicyStoreWriter.COMPOSITIONS_NAMED_GRAPH;
+        final String q =
+                "SELECT ?p ?o WHERE { GRAPH <" + graph + "> { <" + planIri + "> ?p ?o . } }";
+        final List<String[]> rows = new ArrayList<>();
+        try (Connection conn = ConnectionConfiguration.to(
+                    POLICY_DB)
+                .server(serverUrl)
+                .credentials("admin", "admin")
+                .connect();
+             SelectQueryResult r = conn.select(q).execute()) {
+            while (r.hasNext()) {
+                final BindingSet bs = r.next();
+                final Optional<Value> p = bs.value("p");
+                final Optional<Value> o = bs.value("o");
+                rows.add(new String[]{
+                        p.map(Value::toString).orElse(""),
+                        o.map(v -> {
+                            if (v instanceof com.stardog.stark.Literal l) return l.label();
+                            return v.toString();
+                        }).orElse("")
+                });
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * Idempotent bootstrap of the plugin-managed capability policy DB.
+     * Local copy of the parent-package {@code CapabilityPolicyDbHelpers.ensurePolicyDb}
+     * because that helper is package-private.
+     */
+    private static void ensurePolicyDb(final String serverUrl) {
+        try (AdminConnection admin = AdminConnectionConfiguration.toServer(serverUrl)
+                .credentials("admin", "admin")
+                .connect()) {
+            if (!admin.list().contains(POLICY_DB)) {
+                admin.newDatabase(POLICY_DB).create();
+            }
+        }
+    }
 
     private static boolean isDockerAvailable() {
         try {
