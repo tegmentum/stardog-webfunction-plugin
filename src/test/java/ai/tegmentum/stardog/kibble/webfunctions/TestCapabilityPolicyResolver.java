@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Capability refactor R3 — grant resolver refactored to consume a
- * {@link CapabilityPolicyStore} instead of an {@link ExtensionManifest}.
+ * {@link CapabilityPolicyStore} instead of a TOML manifest.
  *
  * <p>Covers the algorithm on {@link CapabilityPolicyResolver}: happy
  * path, unknown-extension policy branches (deny/permit/inherit), all

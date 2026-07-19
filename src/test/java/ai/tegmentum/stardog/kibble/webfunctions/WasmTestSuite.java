@@ -35,8 +35,6 @@ import java.nio.charset.Charset;
     TestCapabilityGrant.class,
     TestCapabilityPolicyResolver.class,
     TestCompose.class,
-    TestExtensionManifest.class,
-    TestExtensionManifestLoader.class,
     TestFilter.class,
     TestHostAllowlist.class,
     TestMap.class,
