@@ -15,6 +15,12 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
     protected void configure() {
 
         SecurityResourceTypes.register(WebFunctionResourceType.INSTANCE);
+        // Capability-policy Phase 1 — register the second resource type so
+        // Stardog's AuthorizingSecurityManager understands
+        // `web-function-callback:invoke:<interface>/<method>` grants issued
+        // through role-permission admin commands. Registration is idempotent;
+        // starting an enforcer is opt-in via the capability master gate.
+        SecurityResourceTypes.register(WebFunctionCallbackResourceType.INSTANCE);
 
         Multibinder.newSetBinder(binder(), Service.class)
                 .addBinding()
@@ -31,6 +37,11 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
         Multibinder<KernelModule> kernelModules =
                 Multibinder.newSetBinder(binder(), KernelModule.class);
         kernelModules.addBinding().to(FuelPolicyStarter.class);
+        // Capability-policy Phase 1b — install the enforcer + wire the
+        // audit ring from `webfunctions.capability.*` system properties at
+        // Kernel-install time. Mirrors FuelPolicyStarter's shape; the
+        // starter no-ops when the master gate is off.
+        kernelModules.addBinding().to(CapabilityPolicyStarter.class);
     }
 
     /**
@@ -64,6 +75,44 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
                     store,
                     WebFunctionConfig.fuelPerUserMonthly(),
                     WebFunctionConfig.fuelPerInvocationMax()));
+        }
+    }
+
+    /**
+     * Kernel-install-time bootstrap for the Phase 1 capability-policy layer.
+     * Wires the audit ring capacity + enable flag, installs the resolver's
+     * anonymous-subject policy from config, and constructs / installs a
+     * {@link CapabilityEnforcer} instance guarded by the master gate.
+     *
+     * <p>No-op when {@link WebFunctionConfig#isCapabilityEnabled()} is false
+     * — the enforcer stays uninstalled and {@link CapabilityEnforcer#activePolicy()}
+     * returns empty, so the hot path bypasses all Phase 1 work.
+     *
+     * <p>The starter reads all keys through {@link WebFunctionConfig}, so
+     * unit tests that mutate system properties before boot get the intended
+     * behavior without a re-install cycle. Live-tuning of audit capacity /
+     * enable state after boot goes through
+     * {@link CapabilityAttributionRing#INSTANCE} directly.
+     */
+    static final class CapabilityPolicyStarter implements KernelModule {
+
+        @Inject
+        CapabilityPolicyStarter() {}
+
+        @Override
+        public void install(final Kernel theKernel) throws StardogException {
+            // Anonymous policy setter is idempotent; setting it even when the
+            // gate is off keeps the resolver's ambient behavior consistent
+            // with the declared config, so a later flip-to-enabled behaves
+            // identically to a boot-with-enabled.
+            CapabilityPolicyResolver.setAnonymousPolicy(WebFunctionConfig.getAnonymousPolicy());
+            CapabilityAttributionRing.INSTANCE.setEnabled(WebFunctionConfig.isAuditEnabled());
+            CapabilityAttributionRing.INSTANCE.setCapacity(WebFunctionConfig.getAuditCapacity());
+
+            if (!WebFunctionConfig.isCapabilityEnabled()) return;
+
+            CapabilityEnforcer.install(CapabilityEnforcer.create());
+            CapabilityEnforcer.setEnabled(true);
         }
     }
 }
