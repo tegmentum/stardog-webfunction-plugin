@@ -250,13 +250,14 @@ public class ComposeIntegrationIT {
      * compositions named graph and round-trips through a SPARQL SELECT.
      *
      * <p>Compose the fixture plan, ask the orchestrator for its Turtle
-     * projection (via {@code sys:compose/rdf#plan-to-turtle-with-iri}),
+     * projection (via {@code sys:compose/rdf#plan-to-turtle-with-artifact}),
      * push the Turtle into the container's
      * {@code system-webfunctions-capability} DB under
      * {@link ComposePolicyStoreWriter#COMPOSITIONS_NAMED_GRAPH}, then
-     * SELECT the plan-anchored triples back out and assert the plan IRI,
-     * a version literal, and a reference to the composed artifact URL
-     * are all visible.
+     * SELECT the plan-anchored triples back out and assert the plan
+     * IRI, a version literal, and both composed-artifact anchor triples
+     * ({@code comp:hasArtifact} + {@code comp:compositionDigest}) are
+     * visible.
      *
      * <p>Insert path is via SPARQL UPDATE over HTTP (bypasses the
      * Kernel-backed {@link ComposePolicyStoreWriter}, which needs a live
@@ -278,7 +279,8 @@ public class ComposeIntegrationIT {
         final byte[] planCbor = PlanV1Cbor.encode(plan);
 
         // Compose to obtain an artifact URL we can reference in RDF
-        // assertions.
+        // assertions, plus a digest to check the compositionDigest
+        // literal against.
         final byte[] composed = CLIENT.composeFromCbor(planCbor);
         assertThat(composed).isNotEmpty();
         final String artifactUrl;
@@ -287,32 +289,178 @@ public class ComposeIntegrationIT {
         } catch (java.io.IOException ioe) {
             throw new IllegalStateException("artifact persist failed: " + ioe.getMessage(), ioe);
         }
+        final String digestHex = ComposedArtifactStore.hexDigestFor(composed);
 
-        // Turtle projection from the orchestrator, keyed on our plan IRI
-        // so the DELETE-before-INSERT idempotency contract holds even
-        // when tests run in different orders across CI shards.
-        final String turtle = CLIENT.planToTurtleCbor(planCbor, planIri);
+        // Turtle projection from the orchestrator, keyed on our plan
+        // IRI + carrying the composed-artifact anchor triples. Same
+        // path ComposeAdmin.composeFromCbor uses in production.
+        final String turtle = CLIENT.planToTurtleWithArtifact(
+                planCbor,
+                Optional.of(planIri),
+                artifactUrl,
+                Optional.of(digestHex));
         assertThat(turtle)
-                .as("planToTurtle must produce a non-empty Turtle document")
+                .as("planToTurtleWithArtifact must produce a non-empty Turtle document")
                 .isNotBlank();
+        // The Turtle string itself should carry both anchor predicates
+        // before insertion — grep on the raw output so any writer
+        // regression fails at the assertion boundary rather than
+        // after a round-trip through Stardog.
+        assertThat(turtle)
+                .as("Turtle must carry comp:hasArtifact anchor triple")
+                .contains("comp:hasArtifact");
+        assertThat(turtle)
+                .as("Turtle must carry comp:compositionDigest anchor triple")
+                .contains("comp:compositionDigest");
+        assertThat(turtle)
+                .as("Turtle must reference the composed artifact URL as an IRI")
+                .contains("<" + artifactUrl + ">");
+        assertThat(turtle)
+                .as("Turtle must carry the digest hex literal")
+                .contains("\"" + digestHex + "\"");
 
-        // Push into the compositions graph. Also assert the composed
-        // artifact URL via a wf:hasComposedArtifact triple so IE2's
-        // assertion set includes both orchestrator-produced RDF and
-        // admin-tracked composed-artifact anchoring.
-        insertCompositionsTurtle(SERVER_URL, planIri, turtle, artifactUrl);
+        // Push into the compositions graph.
+        insertCompositionsTurtle(SERVER_URL, planIri, turtle);
 
-        // Query the compositions graph back out and confirm the plan IRI,
-        // a triple carrying the composed artifact URL, and at least one
-        // plan predicate the orchestrator emits are visible.
+        // Query the compositions graph back out and confirm the plan
+        // IRI, both anchor triples, and at least one plan predicate the
+        // orchestrator emits are visible.
         final List<String[]> rows = readCompositionTriples(SERVER_URL, planIri);
         assertThat(rows)
                 .as("compositions graph should carry orchestrator-emitted plan triples for " + planIri)
                 .isNotEmpty();
+        // comp:hasArtifact triple — subject is planIri, predicate is
+        // comp:hasArtifact, object is the artifact URL (as an IRI).
         assertThat(rows)
-                .as("composition RDF should reference the composed artifact URL")
-                .anyMatch(pv -> artifactUrl.equals(pv[1]));
+                .as("composition RDF should reference the composed artifact URL via comp:hasArtifact")
+                .anyMatch(pv -> COMP_HAS_ARTIFACT.equals(pv[0]) && artifactUrl.equals(pv[1]));
+        // comp:compositionDigest triple — same subject, distinct object
+        // (the hex literal).
+        assertThat(rows)
+                .as("composition RDF should carry the compositionDigest literal for the composed bytes")
+                .anyMatch(pv -> COMP_COMPOSITION_DIGEST.equals(pv[0]) && digestHex.equals(pv[1]));
     }
+
+    // ---- IE7 ------------------------------------------------------------
+
+    /**
+     * IE7 — the composed-artifact anchor triples are directly joinable
+     * against extension capability grants. Closes the composition-admin
+     * memo §4.6 gap.
+     *
+     * <p>Setup: compose two plans. Trust one via a
+     * {@code cap:trusted true} grant against its composed artifact URL;
+     * leave the other ungranted. Then run the diff query the memo
+     * documents:
+     * <pre>{@code
+     *   SELECT ?artifact ?plan WHERE {
+     *     GRAPH <compositions> { ?plan comp:hasArtifact ?artifact . }
+     *     FILTER NOT EXISTS { ?artifact cap:trusted true }
+     *   }
+     * }</pre>
+     *
+     * <p>Expected result: only the ungranted composition surfaces. This
+     * is the target contract — SPARQL admins can list "compositions
+     * without a capability grant yet" via one query, no VALUES
+     * scaffolding and no side-registry, because the composed artifact
+     * URL is a first-class RDF subject in both the compositions graph
+     * (as {@code comp:hasArtifact} object) and the default graph (as
+     * the grant subject).
+     */
+    @Test
+    public void ie7_diffQueryJoinsCompositionsWithCapabilityGrants() {
+        ensurePolicyDb(SERVER_URL);
+
+        // Two fresh plan IRIs so this test's assertions don't
+        // cross-contaminate with IE2/IE4's inserts.
+        final String iriGranted = "urn:test:compose-it:plan:ie7:granted";
+        final String iriUngranted = "urn:test:compose-it:plan:ie7:ungranted";
+
+        final PlanV1 planGranted = TestComposePlanFixtures.fullerPlan(
+                "uppercase", FIXTURE_WASM_DIGEST, "ie7-granted");
+        final PlanV1 planUngranted = TestComposePlanFixtures.fullerPlan(
+                "uppercase", FIXTURE_WASM_DIGEST, "ie7-ungranted");
+
+        final byte[] cborGranted = PlanV1Cbor.encode(planGranted);
+        final byte[] cborUngranted = PlanV1Cbor.encode(planUngranted);
+
+        final byte[] composedGranted = CLIENT.composeFromCbor(cborGranted);
+        final byte[] composedUngranted = CLIENT.composeFromCbor(cborUngranted);
+
+        final String urlGranted;
+        final String urlUngranted;
+        try {
+            urlGranted = ARTIFACT_STORE.persist(composedGranted);
+            urlUngranted = ARTIFACT_STORE.persist(composedUngranted);
+        } catch (java.io.IOException ioe) {
+            throw new IllegalStateException("artifact persist failed: " + ioe.getMessage(), ioe);
+        }
+        // Sanity: the two plans must have distinct artifact URLs so the
+        // grant on one doesn't shadow the other.
+        assertThat(urlGranted).isNotEqualTo(urlUngranted);
+
+        final String digestGranted = ComposedArtifactStore.hexDigestFor(composedGranted);
+        final String digestUngranted = ComposedArtifactStore.hexDigestFor(composedUngranted);
+
+        final String turtleGranted = CLIENT.planToTurtleWithArtifact(
+                cborGranted, Optional.of(iriGranted), urlGranted, Optional.of(digestGranted));
+        final String turtleUngranted = CLIENT.planToTurtleWithArtifact(
+                cborUngranted, Optional.of(iriUngranted), urlUngranted, Optional.of(digestUngranted));
+
+        insertCompositionsTurtle(SERVER_URL, iriGranted, turtleGranted);
+        insertCompositionsTurtle(SERVER_URL, iriUngranted, turtleUngranted);
+
+        // Purge any residual grants left by prior test runs on the same
+        // Stardog instance, then grant only the "granted" URL.
+        purgeExtension(SERVER_URL, urlGranted);
+        purgeExtension(SERVER_URL, urlUngranted);
+        grantHttpCallbacks(SERVER_URL, urlGranted);
+
+        // The composition-admin memo §4.6 diff query. cap: namespace is
+        // the plugin's capability-policy vocabulary; comp: is the
+        // orchestrator's composition vocabulary.
+        final String q =
+                "PREFIX comp: <http://tegmentum.ai/ns/composition/>\n"
+                + "PREFIX cap:  <" + CAP_NAMESPACE + ">\n"
+                + "SELECT ?artifact ?plan WHERE {\n"
+                + "  GRAPH <" + ComposePolicyStoreWriter.COMPOSITIONS_NAMED_GRAPH + "> {\n"
+                + "    ?plan comp:hasArtifact ?artifact .\n"
+                + "  }\n"
+                + "  FILTER NOT EXISTS { ?artifact cap:trusted true }\n"
+                + "  FILTER (?plan = <" + iriGranted + "> || ?plan = <" + iriUngranted + ">)\n"
+                + "}";
+
+        final List<String[]> ungrantedRows = new ArrayList<>();
+        try (Connection conn = ConnectionConfiguration.to(POLICY_DB)
+                .server(SERVER_URL)
+                .credentials("admin", "admin")
+                .connect();
+             SelectQueryResult r = conn.select(q).execute()) {
+            while (r.hasNext()) {
+                final BindingSet bs = r.next();
+                ungrantedRows.add(new String[]{
+                        bs.value("artifact").map(Value::toString).orElse(""),
+                        bs.value("plan").map(Value::toString).orElse("")});
+            }
+        }
+
+        assertThat(ungrantedRows)
+                .as("diff query must surface exactly the ungranted composition")
+                .hasSize(1);
+        assertThat(ungrantedRows.get(0)[0])
+                .as("surfaced artifact URL must be the ungranted one")
+                .isEqualTo(urlUngranted);
+        assertThat(ungrantedRows.get(0)[1])
+                .as("surfaced plan IRI must be the ungranted one")
+                .isEqualTo(iriUngranted);
+    }
+
+    /** IRIs of the composed-artifact anchor predicates — mirror
+     *  {@code compose_rdf::vocab::HAS_ARTIFACT} + {@code COMPOSITION_DIGEST}. */
+    private static final String COMP_HAS_ARTIFACT =
+            "http://tegmentum.ai/ns/composition/hasArtifact";
+    private static final String COMP_COMPOSITION_DIGEST =
+            "http://tegmentum.ai/ns/composition/compositionDigest";
 
     // ---- IE3 ------------------------------------------------------------
 
@@ -466,11 +614,20 @@ public class ComposeIntegrationIT {
 
         // Both plans' Turtle projections land in the compositions graph
         // under their respective plan IRIs. Distinct DELETE-INSERT
-        // windows so neither eviction steps on the other.
+        // windows so neither eviction steps on the other. Use
+        // planToTurtleWithArtifact so the Turtle carries the
+        // comp:hasArtifact anchor directly — same shape ComposeAdmin
+        // produces in production.
         final String iriA = "urn:test:compose-it:plan:ie4:alpha";
         final String iriB = "urn:test:compose-it:plan:ie4:beta";
-        insertCompositionsTurtle(SERVER_URL, iriA, CLIENT.planToTurtleCbor(cborA, iriA), artifactUrlA);
-        insertCompositionsTurtle(SERVER_URL, iriB, CLIENT.planToTurtleCbor(cborB, iriB), artifactUrlB);
+        final String digestA = ComposedArtifactStore.hexDigestFor(composedA);
+        final String digestB = ComposedArtifactStore.hexDigestFor(composedB);
+        insertCompositionsTurtle(SERVER_URL, iriA,
+                CLIENT.planToTurtleWithArtifact(
+                        cborA, Optional.of(iriA), artifactUrlA, Optional.of(digestA)));
+        insertCompositionsTurtle(SERVER_URL, iriB,
+                CLIENT.planToTurtleWithArtifact(
+                        cborB, Optional.of(iriB), artifactUrlB, Optional.of(digestB)));
 
         final List<String[]> rowsA = readCompositionTriples(SERVER_URL, iriA);
         final List<String[]> rowsB = readCompositionTriples(SERVER_URL, iriB);
@@ -564,19 +721,20 @@ public class ComposeIntegrationIT {
     /**
      * SPARQL UPDATE that (a) DELETEs any prior triples anchored on
      * {@code planIri} in the compositions graph, then (b) INSERTs the
-     * orchestrator's Turtle plus a {@code wf:hasComposedArtifact} anchor
-     * triple linking the plan IRI to the composed artifact URL. Mirrors
-     * the production writer's DELETE-then-INSERT idempotency shape
-     * without requiring a Kernel reference.
+     * orchestrator's Turtle. Mirrors the production writer's
+     * DELETE-then-INSERT idempotency shape without requiring a Kernel
+     * reference.
+     *
+     * <p>The Turtle is expected to be output of
+     * {@code planToTurtleWithArtifact}, which already carries the
+     * {@code comp:hasArtifact} + {@code comp:compositionDigest} anchor
+     * triples — no separate anchor triple is injected here.
      */
     private static void insertCompositionsTurtle(final String serverUrl,
                                                  final String planIri,
-                                                 final String turtle,
-                                                 final String artifactUrl) {
+                                                 final String turtle) {
         final String graph = ComposePolicyStoreWriter.COMPOSITIONS_NAMED_GRAPH;
-        final String hasComposedArtifact =
-                "http://semantalytics.com/2021/03/ns/stardog/webfunction/hasComposedArtifact";
-        // Break the update into three statements so a syntactic issue in
+        // Break the update into two statements so a syntactic issue in
         // one doesn't hide a later one. Stardog batches these in a single
         // transaction the same way multiple SPARQL Update requests would.
         final String deleteExisting =
@@ -585,8 +743,7 @@ public class ComposeIntegrationIT {
         final String insertTurtle =
                 "INSERT DATA { GRAPH <" + graph + "> {\n"
                         + turtle
-                        + "\n<" + planIri + "> <" + hasComposedArtifact + "> <" + artifactUrl + "> .\n"
-                        + "} }";
+                        + "\n} }";
         try (Connection conn = ConnectionConfiguration.to(
                     POLICY_DB)
                 .server(serverUrl)
