@@ -53,7 +53,39 @@ public record CapabilityAuditRow(
         String argumentsSummary,
         Outcome outcome,
         String denyReason
-) {
+) implements AuditRow {
+
+    /**
+     * NDJSON serialization for the Phase 6 disk sink. Field order is stable
+     * so downstream tooling that diffs sink output across releases sees a
+     * predictable shape; the discriminator {@code "type":"capability"} lets
+     * an operator mux the two audit files into one stream later without
+     * losing per-row-type identity.
+     */
+    @Override
+    public String toNdjsonLine() {
+        final StringBuilder b = new StringBuilder(256);
+        b.append("{\"type\":\"capability\",\"timestamp\":");
+        AuditRow.escapeJson(timestamp.toString(), b);
+        b.append(",\"userId\":");
+        AuditRow.escapeJson(userId, b);
+        b.append(",\"orgId\":");
+        AuditRow.escapeJson(orgId, b);
+        b.append(",\"extensionUri\":");
+        AuditRow.escapeJson(extensionUri, b);
+        b.append(",\"interfaceName\":");
+        AuditRow.escapeJson(interfaceName, b);
+        b.append(",\"method\":");
+        AuditRow.escapeJson(method, b);
+        b.append(",\"argumentsSummary\":");
+        AuditRow.escapeJson(argumentsSummary, b);
+        b.append(",\"outcome\":");
+        AuditRow.escapeJson(outcome.name(), b);
+        b.append(",\"denyReason\":");
+        AuditRow.escapeJson(denyReason, b);
+        b.append('}');
+        return b.toString();
+    }
 
     /**
      * Terminal disposition of a host-callback dispatch decision.

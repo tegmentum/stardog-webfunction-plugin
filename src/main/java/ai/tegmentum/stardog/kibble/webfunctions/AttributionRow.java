@@ -44,7 +44,7 @@ public record AttributionRow(
         long fuelConsumed,
         Outcome outcome,
         String queryId
-) {
+) implements AuditRow {
 
     public AttributionRow {
         Objects.requireNonNull(timestamp, "timestamp");
@@ -53,6 +53,33 @@ public record AttributionRow(
         Objects.requireNonNull(extensionUri, "extensionUri");
         Objects.requireNonNull(outcome, "outcome");
         Objects.requireNonNull(queryId, "queryId");
+    }
+
+    /**
+     * NDJSON serialization for the Phase 6 disk sink. Field order is stable
+     * so downstream tooling that diffs sink output across releases sees a
+     * predictable shape; the discriminator {@code "type":"fuel"} lets an
+     * operator mux the two audit files into one stream later without losing
+     * per-row-type identity.
+     */
+    @Override
+    public String toNdjsonLine() {
+        final StringBuilder b = new StringBuilder(192);
+        b.append("{\"type\":\"fuel\",\"timestamp\":");
+        AuditRow.escapeJson(timestamp.toString(), b);
+        b.append(",\"userId\":");
+        AuditRow.escapeJson(userId, b);
+        b.append(",\"orgId\":");
+        AuditRow.escapeJson(orgId, b);
+        b.append(",\"extensionUri\":");
+        AuditRow.escapeJson(extensionUri, b);
+        b.append(",\"fuelConsumed\":").append(fuelConsumed);
+        b.append(",\"outcome\":");
+        AuditRow.escapeJson(outcome.name(), b);
+        b.append(",\"queryId\":");
+        AuditRow.escapeJson(queryId, b);
+        b.append('}');
+        return b.toString();
     }
 
     /**
