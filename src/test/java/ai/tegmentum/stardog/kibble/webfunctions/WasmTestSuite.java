@@ -15,6 +15,7 @@ import ai.tegmentum.stardog.kibble.webfunctions.compose.TestComposeOrchestratorC
 import ai.tegmentum.stardog.kibble.webfunctions.compose.TestComposePolicyStoreWriter;
 import ai.tegmentum.stardog.kibble.webfunctions.compose.TestPlanV1Cbor;
 import ai.tegmentum.stardog.kibble.webfunctions.compose.TestSha256UrlLoader;
+import ai.tegmentum.stardog.kibble.webfunctions.compose.TestWebFunctionComposeService;
 import junit.framework.TestCase;
 import org.apache.commons.io.IOUtils;
 import org.junit.AfterClass;
@@ -56,6 +57,7 @@ import java.nio.charset.Charset;
     TestComposePolicyStoreWriter.class,
     TestPlanV1Cbor.class,
     TestSha256UrlLoader.class,
+    TestWebFunctionComposeService.class,
     TestFilter.class,
     TestHostAllowlist.class,
     TestHostCallbacksInvokerSubject.class,
