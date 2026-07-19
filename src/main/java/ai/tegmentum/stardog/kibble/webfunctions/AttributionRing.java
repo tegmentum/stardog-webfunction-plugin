@@ -91,6 +91,11 @@ public final class AttributionRing {
             }
             ring.addLast(row);
         }
+        // Phase 6 — forward to the durable sink AFTER the in-memory
+        // append. The sink's write is contractually non-blocking (bounded
+        // queue + drop-oldest on full); when the sink is the noop default,
+        // this is a single virtual dispatch to an empty method.
+        sink.write(row);
     }
 
     /**

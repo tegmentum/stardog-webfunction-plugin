@@ -122,6 +122,9 @@ public final class CapabilityAttributionRing {
             }
             ring.addLast(row);
         }
+        // Phase 6 — forward to the durable sink AFTER the in-memory
+        // append. Non-blocking; noop when disk backing is off.
+        sink.write(row);
     }
 
     /**
