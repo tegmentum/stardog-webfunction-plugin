@@ -63,6 +63,13 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
         // directory and installs a JVM shutdown hook so pending rows
         // drain to disk on plugin shutdown.
         kernelModules.addBinding().to(AuditSinkStarter.class);
+        // Wave A — sink registry (in-memory) for the sink-callbacks /
+        // sink-query-callbacks / document-sink-callbacks host callbacks.
+        // Config-driven: reads webfunctions.sink.names and registers each
+        // name into the singleton {@link SinkRegistry}. No-op when the
+        // property is unset (registry stays empty; every sink call
+        // returns `no-such-sink`).
+        kernelModules.addBinding().to(SinkRegistryStarter.class);
     }
 
     /**
@@ -224,6 +231,52 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
                         label, config.directory, ioe.toString());
                 return NoopAuditSink.INSTANCE;
             }
+        }
+    }
+
+    /**
+     * Kernel-install-time bootstrap for the Wave A sink registry. Reads
+     * the comma-separated {@link WebFunctionConfig#PROP_SINK_NAMES}
+     * property and registers each name into the singleton
+     * {@link SinkRegistry}, making it discoverable to
+     * {@code sink-callbacks::list-sinks} and routable by
+     * {@code emit-quad(s)}, {@code scan-sink-quads}, and the
+     * {@code document-sink-callbacks} triad.
+     *
+     * <p>No-op when the property is unset — the registry stays empty and
+     * every sink-family callback surfaces the interface's
+     * {@code no-such-sink} arm for any name a guest requests.
+     *
+     * <p>Startup discipline: idempotent registration is NOT supported —
+     * a duplicate name in the property surfaces as
+     * {@link IllegalStateException} (thrown by
+     * {@link SinkRegistry#register(String)}) and aborts install. This
+     * catches config typos loudly rather than silently dropping
+     * accumulated state. When the plugin is re-installed inside a single
+     * JVM (tests spinning the module up twice), the starter first
+     * {@link SinkRegistry#reset()}s so re-registration succeeds.
+     */
+    static final class SinkRegistryStarter implements KernelModule {
+
+        private static final Logger LOG = LoggerFactory.getLogger(SinkRegistryStarter.class);
+
+        @Inject
+        SinkRegistryStarter() {}
+
+        @Override
+        public void install(final Kernel theKernel) throws StardogException {
+            final java.util.List<String> names = WebFunctionConfig.getSinkNames();
+            if (names.isEmpty()) return;
+
+            // Reset first so a re-install inside a single JVM (unit-test
+            // harnesses that spin up the module twice, or ops-side "re-
+            // read config" flows) doesn't collide with prior registrations.
+            SinkRegistry.INSTANCE.reset();
+            for (final String name : names) {
+                SinkRegistry.INSTANCE.register(name);
+            }
+            LOG.info("web-function sink registry: registered {} sink(s): {}",
+                    names.size(), names);
         }
     }
 }

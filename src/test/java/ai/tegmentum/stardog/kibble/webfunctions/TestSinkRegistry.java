@@ -125,6 +125,46 @@ public class TestSinkRegistry {
         assertThat(SinkRegistry.getInstance()).isSameAs(SinkRegistry.INSTANCE);
     }
 
+    // ---- config parsing (webfunctions.sink.names) --------------------
+
+    @Test
+    public void configUnsetYieldsEmptyList() {
+        System.clearProperty(WebFunctionConfig.PROP_SINK_NAMES);
+        assertThat(WebFunctionConfig.getSinkNames()).isEmpty();
+    }
+
+    @Test
+    public void configSingleName() {
+        System.setProperty(WebFunctionConfig.PROP_SINK_NAMES, "alpha");
+        try {
+            assertThat(WebFunctionConfig.getSinkNames()).containsExactly("alpha");
+        } finally {
+            System.clearProperty(WebFunctionConfig.PROP_SINK_NAMES);
+        }
+    }
+
+    @Test
+    public void configMultipleNamesWithWhitespace() {
+        System.setProperty(WebFunctionConfig.PROP_SINK_NAMES, "alpha, beta ,  gamma");
+        try {
+            assertThat(WebFunctionConfig.getSinkNames())
+                    .containsExactly("alpha", "beta", "gamma");
+        } finally {
+            System.clearProperty(WebFunctionConfig.PROP_SINK_NAMES);
+        }
+    }
+
+    @Test
+    public void configEmptyPiecesDropped() {
+        System.setProperty(WebFunctionConfig.PROP_SINK_NAMES, ",alpha,,,beta,");
+        try {
+            assertThat(WebFunctionConfig.getSinkNames())
+                    .containsExactly("alpha", "beta");
+        } finally {
+            System.clearProperty(WebFunctionConfig.PROP_SINK_NAMES);
+        }
+    }
+
     /** Build a minimal quad ComponentVal record with named-node terms
      *  in every position. Sufficient for lookup / iteration tests. */
     static ComponentVal quadRecord(final String s, final String p, final String o) {

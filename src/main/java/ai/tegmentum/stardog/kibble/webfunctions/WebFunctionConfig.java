@@ -5,6 +5,9 @@ import ai.tegmentum.webassembly4j.api.config.ResourceLimits;
 import ai.tegmentum.webassembly4j.api.config.WebAssemblyConfig;
 import ai.tegmentum.webassembly4j.provider.wasmtime.config.WasmtimeConfig;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.OptionalLong;
 
 public final class WebFunctionConfig {
@@ -27,6 +30,19 @@ public final class WebFunctionConfig {
     public static final int DEFAULT_CALLBACK_MAX_ROWS  = 100_000;
 
     public static final String DEFAULT_ENGINE_PROVIDER = "wasmtime";
+
+    // Sink registry — Wave A (in-memory only). Comma-separated list of
+    // sink names registered at plugin startup by
+    // {@link WebFunctionServiceModule.SinkRegistryStarter} and made
+    // available to the sink-family host callbacks
+    // (sink-callbacks / sink-query-callbacks / document-sink-callbacks).
+    //
+    // Empty (unset) => no sinks registered => every sink-family callback
+    // returns the interface's `no-such-sink` arm. The set of sinks is
+    // immutable at runtime — there is no runtime `register-sink` WIT
+    // method by design; sinks are a substrate concept the operator
+    // declares once at boot.
+    public static final String PROP_SINK_NAMES = "webfunctions.sink.names";
 
     // Fuel metering Phase 1 — defensive-only layer.
     //
@@ -508,6 +524,35 @@ public final class WebFunctionConfig {
         final String raw = System.getProperty(PROP_AUDIT_DISK_GZIP_ROTATED);
         if (raw == null || raw.isEmpty()) return DEFAULT_AUDIT_DISK_GZIP_ROTATED;
         return Boolean.parseBoolean(raw.trim());
+    }
+
+    /**
+     * Names of sinks registered at plugin startup by
+     * {@link WebFunctionServiceModule.SinkRegistryStarter}. Parsed
+     * from the comma-separated {@link #PROP_SINK_NAMES} system property;
+     * blank / whitespace-only entries are dropped and every remaining
+     * entry is trimmed. Duplicate names surface as an
+     * {@link IllegalStateException} at
+     * {@link SinkRegistry#register(String)} time — caught eagerly at
+     * install rather than silently swallowing later state resets.
+     *
+     * <p>Empty list when the property is unset or contains only blanks
+     * — Wave A default: no sinks, every sink callback returns
+     * {@code no-such-sink}.
+     */
+    public static List<String> getSinkNames() {
+        final String raw = System.getProperty(PROP_SINK_NAMES);
+        if (raw == null || raw.isEmpty()) {
+            return Collections.emptyList();
+        }
+        final List<String> out = new ArrayList<>();
+        for (final String piece : raw.split(",")) {
+            final String trimmed = piece.trim();
+            if (!trimmed.isEmpty()) {
+                out.add(trimmed);
+            }
+        }
+        return out;
     }
 
     private static OptionalLong getLong(final String key) {

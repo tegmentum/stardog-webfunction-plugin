@@ -16,11 +16,11 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p><b>Singleton, config-driven.</b> Sinks are registered at plugin
  * startup by {@link WebFunctionServiceModule} from the comma-separated
- * {@code webfunctions.sink.names} system property (see
- * {@link WebFunctionConfig}) and are immutable thereafter — there is
- * deliberately no runtime {@code register-sink} WIT method. A guest
- * that references an unregistered sink name gets the interface's
- * {@code no-such-sink} error arm.
+ * {@link WebFunctionConfig#PROP_SINK_NAMES} system property and are
+ * immutable thereafter — there is deliberately no runtime
+ * {@code register-sink} WIT method. A guest that references an
+ * unregistered sink name gets the interface's {@code no-such-sink}
+ * error arm.
  *
  * <p><b>Thread-safety.</b> Outer map is a {@link ConcurrentHashMap}.
  * Each {@link SinkEntry}'s internals are lock-free
@@ -71,7 +71,7 @@ public final class SinkRegistry {
         if (prev != null) {
             throw new IllegalStateException(
                     "sink '" + name + "' is already registered — duplicate entry in "
-                    + "webfunctions.sink.names?");
+                    + WebFunctionConfig.PROP_SINK_NAMES + "?");
         }
         return created;
     }
