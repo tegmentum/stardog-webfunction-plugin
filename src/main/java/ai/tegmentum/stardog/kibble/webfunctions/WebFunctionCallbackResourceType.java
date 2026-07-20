@@ -10,7 +10,7 @@ import com.complexible.stardog.security.SecurityResourceType;
  * <p>Distinct from {@link WebFunctionResourceType} (id
  * {@code "web-function"}), which gates {@code EXECUTE} on the wasm URL
  * itself. This resource type gates the finer-grained capability
- * surface — {@code web-function-callback:invoke:<interface>/<method>}
+ * surface — {@code web-function-callback:execute:<interface>/<method>}
  * per {@code capability-implementation.md} §8. Two resource types,
  * two axes of permission: "can this user load this extension" vs.
  * "can this extension, under this user's authority, reach this
@@ -22,7 +22,7 @@ import com.complexible.stardog.security.SecurityResourceType;
  *
  * <p>{@code isDatabaseType() = false} — callback grants are process-wide,
  * not per-database. An admin who grants a Shiro role
- * {@code "web-function-callback:invoke:http-callbacks/*"} authorizes
+ * {@code "web-function-callback:execute:http-callbacks/*"} authorizes
  * the role's holders across every database; database ACLs apply
  * independently through Stardog's native machinery when the wrapped
  * operation actually runs (Phase 4 invoker-subject work).

@@ -22,7 +22,7 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
         SecurityResourceTypes.register(WebFunctionResourceType.INSTANCE);
         // Capability-policy Phase 1 — register the second resource type so
         // Stardog's AuthorizingSecurityManager understands
-        // `web-function-callback:invoke:<interface>/<method>` grants issued
+        // `web-function-callback:execute:<interface>/<method>` grants issued
         // through role-permission admin commands. Registration is idempotent;
         // starting an enforcer is opt-in via the capability master gate.
         SecurityResourceTypes.register(WebFunctionCallbackResourceType.INSTANCE);

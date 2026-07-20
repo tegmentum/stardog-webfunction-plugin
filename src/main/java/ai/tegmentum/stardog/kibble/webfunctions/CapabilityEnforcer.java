@@ -126,7 +126,7 @@ public final class CapabilityEnforcer {
      *       extract the hostname from {@code argsSummary} and check the
      *       allowlist.</li>
      *   <li>Shiro permission — check
-     *       {@link WebFunctionCapability#forInvoke} against the current
+     *       {@link WebFunctionCapability#forExecute} against the current
      *       subject via {@link ShiroUtils#check}.</li>
      * </ol>
      *
@@ -170,7 +170,7 @@ public final class CapabilityEnforcer {
         // 3. Shiro permission — collapse any Shiro/Stardog failure onto
         // permission-denied so a broken auth path doesn't leak an
         // ambient-credential path through to the guest.
-        final String permString = WebFunctionCapability.forInvoke(interfaceName, method);
+        final String permString = WebFunctionCapability.forExecute(interfaceName, method);
         boolean shiroOk;
         try {
             shiroOk = ShiroUtils.check(new WildcardPermission(permString));

@@ -27,61 +27,61 @@ public class TestWebFunctionCapability {
     @Test
     public void graphCallbackConstantsMatchMemo() {
         assertThat(WebFunctionCapability.GRAPH_QUERY)
-                .isEqualTo("web-function-callback:invoke:graph-callbacks/execute-query");
+                .isEqualTo("web-function-callback:execute:graph-callbacks/execute-query");
         assertThat(WebFunctionCapability.GRAPH_UPDATE)
-                .isEqualTo("web-function-callback:invoke:graph-callbacks/execute-update");
+                .isEqualTo("web-function-callback:execute:graph-callbacks/execute-update");
     }
 
     @Test
     public void httpCallbackConstantsMatchMemo() {
         assertThat(WebFunctionCapability.HTTP_GET)
-                .isEqualTo("web-function-callback:invoke:http-callbacks/http-get");
+                .isEqualTo("web-function-callback:execute:http-callbacks/http-get");
         assertThat(WebFunctionCapability.HTTP_POST)
-                .isEqualTo("web-function-callback:invoke:http-callbacks/http-post-json");
+                .isEqualTo("web-function-callback:execute:http-callbacks/http-post-json");
     }
 
     @Test
     public void wasmCallbackConstantsMatchMemo() {
         assertThat(WebFunctionCapability.WASM_INVOKE)
-                .isEqualTo("web-function-callback:invoke:wasm-callbacks/invoke-wasm");
+                .isEqualTo("web-function-callback:execute:wasm-callbacks/invoke-wasm");
         assertThat(WebFunctionCapability.WASM_SERVICE)
-                .isEqualTo("web-function-callback:invoke:wasm-callbacks/invoke-wasm-service");
+                .isEqualTo("web-function-callback:execute:wasm-callbacks/invoke-wasm-service");
     }
 
     @Test
-    public void forInvokeSynthesisMatchesEveryConstant() {
+    public void forExecuteSynthesisMatchesEveryConstant() {
         // Each constant must round-trip through the helper — Phase 5+
         // interfaces added later compute the same shape.
-        assertThat(WebFunctionCapability.forInvoke("graph-callbacks", "execute-query"))
+        assertThat(WebFunctionCapability.forExecute("graph-callbacks", "execute-query"))
                 .isEqualTo(WebFunctionCapability.GRAPH_QUERY);
-        assertThat(WebFunctionCapability.forInvoke("graph-callbacks", "execute-update"))
+        assertThat(WebFunctionCapability.forExecute("graph-callbacks", "execute-update"))
                 .isEqualTo(WebFunctionCapability.GRAPH_UPDATE);
-        assertThat(WebFunctionCapability.forInvoke("http-callbacks", "http-get"))
+        assertThat(WebFunctionCapability.forExecute("http-callbacks", "http-get"))
                 .isEqualTo(WebFunctionCapability.HTTP_GET);
-        assertThat(WebFunctionCapability.forInvoke("http-callbacks", "http-post-json"))
+        assertThat(WebFunctionCapability.forExecute("http-callbacks", "http-post-json"))
                 .isEqualTo(WebFunctionCapability.HTTP_POST);
-        assertThat(WebFunctionCapability.forInvoke("wasm-callbacks", "invoke-wasm"))
+        assertThat(WebFunctionCapability.forExecute("wasm-callbacks", "invoke-wasm"))
                 .isEqualTo(WebFunctionCapability.WASM_INVOKE);
-        assertThat(WebFunctionCapability.forInvoke("wasm-callbacks", "invoke-wasm-service"))
+        assertThat(WebFunctionCapability.forExecute("wasm-callbacks", "invoke-wasm-service"))
                 .isEqualTo(WebFunctionCapability.WASM_SERVICE);
     }
 
     @Test
-    public void forInvokeHandlesNewInterfacesUniformly() {
+    public void forExecuteHandlesNewInterfacesUniformly() {
         // Phase 5+ interfaces compute through the same helper.
-        assertThat(WebFunctionCapability.forInvoke("sink-callbacks", "write"))
-                .isEqualTo("web-function-callback:invoke:sink-callbacks/write");
+        assertThat(WebFunctionCapability.forExecute("sink-callbacks", "write"))
+                .isEqualTo("web-function-callback:execute:sink-callbacks/write");
     }
 
     @Test
-    public void forInvokeToleratesNullsWithEmptyPieces() {
+    public void forExecuteToleratesNullsWithEmptyPieces() {
         // Defensive — malformed inputs must not NPE at the enforcer's
         // permission-build site. Empty pieces still round-trip predictably
         // so audit rows can attribute the misuse.
-        assertThat(WebFunctionCapability.forInvoke(null, null))
-                .isEqualTo("web-function-callback:invoke:/");
-        assertThat(WebFunctionCapability.forInvoke("graph-callbacks", null))
-                .isEqualTo("web-function-callback:invoke:graph-callbacks/");
+        assertThat(WebFunctionCapability.forExecute(null, null))
+                .isEqualTo("web-function-callback:execute:/");
+        assertThat(WebFunctionCapability.forExecute("graph-callbacks", null))
+                .isEqualTo("web-function-callback:execute:graph-callbacks/");
     }
 
     @Test
@@ -93,7 +93,7 @@ public class TestWebFunctionCapability {
     }
 
     @Test
-    public void actionInvokeConstantAvailable() {
-        assertThat(WebFunctionCapability.ACTION_INVOKE).isEqualTo("invoke");
+    public void actionExecuteConstantAvailable() {
+        assertThat(WebFunctionCapability.ACTION_EXECUTE).isEqualTo("execute");
     }
 }
