@@ -1504,19 +1504,29 @@ public final class HostCallbacks {
      * {@code execute-sink-select: func(sink-name: string, sparql: string)
      *  -> result<list<binding>, sink-query-error>}.
      *
-     * <p>Wave A intentionally does NOT implement SPARQL-over-sink — the
-     * reference in-memory sink does not embed a SPARQL evaluator, and
-     * adding oxigraph or Jena for a Wave A "just get it compiling"
-     * would drag a dep the plugin does not otherwise need. Returns
-     * {@code backend-error} (NOT {@code not-permitted} — the distinction
-     * matters: permission checks pass; the backend simply cannot
-     * evaluate the query text). Guests migrating today either use
-     * {@link #sinkQueryScanQuads} or wait on the follow-on wave that
-     * lands a SPARQL adapter (probably via the Oxigraph reference impl
-     * used through a shared-store binding).
+     * <p>Wave D — real SPARQL SELECT evaluator over the sink's
+     * accumulated quads. Routes through {@link SinkSparqlEngine} which
+     * spins a fresh {@link org.eclipse.rdf4j.sail.memory.MemoryStore}
+     * per invocation, loads the sink's WIT quads via
+     * {@link SinkStatementMarshaller#loadInto}, evaluates against the
+     * store, marshals solutions into WIT {@code binding} records via
+     * {@link SinkBindingMarshaller#toWitBindings}, and tears the store
+     * back down. See the engine class doc for the full lifecycle.
      *
-     * <p>An unknown sink still returns {@code no-such-sink} so error
-     * discrimination stays consistent across the interface's methods.
+     * <p>Error mapping (WIT {@code sink-query-error} variant):
+     * <ul>
+     *   <li>Unknown sink -&gt; {@code no-such-sink} (before eval).</li>
+     *   <li>{@link SinkSparqlEngine.SyntaxError} (parse failure or
+     *       non-SELECT shape) -&gt; {@code syntax-error}.</li>
+     *   <li>{@link SinkSparqlEngine.BackendError} (Sail startup, sail
+     *       eval, malformed quad in deque) -&gt; {@code backend-error}.</li>
+     *   <li>{@link WfCapabilityError.PerCallDenied} propagates out of
+     *       the handler (throw, not variant) — the master gate turned
+     *       the check ON and denied; matches the write-path convention.</li>
+     * </ul>
+     *
+     * <p>Capability enforcement fires BEFORE the engine call — a
+     * denial short-circuits without spinning up a MemoryStore.
      */
     public static WitHostFunction sinkQueryExecuteSelect() {
         return args -> {
@@ -1524,15 +1534,27 @@ public final class HostCallbacks {
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "sink-query-callbacks", "execute-sink-select", sinkName);
             if (ctx != null) ctx.chargeToll("sink-query-callbacks.execute-sink-select");
-            if (!SinkRegistry.INSTANCE.contains(sinkName)) {
+            final Optional<SinkEntry> entryOpt = SinkRegistry.INSTANCE.sink(sinkName);
+            if (entryOpt.isEmpty()) {
                 return new Object[] { ComponentVal.err(sinkQueryError("no-such-sink",
                     "sink-query-callbacks: no sink registered under name '" + sinkName + "'.")) };
             }
-            return new Object[] { ComponentVal.err(sinkQueryError("backend-error",
-                "sink-query-callbacks: execute-sink-select not yet implemented on the Stardog "
-                + "plugin - the in-memory sink backend has no SPARQL evaluator. Guests can use "
-                + "scan-sink-quads for BGP-shape reads today; SPARQL-over-sink support is "
-                + "follow-on work. Sink name: '" + sinkName + "'.")) };
+            final String sparql = args.length > 1 && args[1] != null
+                    ? ((ComponentVal) args[1]).asString()
+                    : "";
+            try {
+                final List<ComponentVal> bindings =
+                        SinkSparqlEngine.INSTANCE.evaluate(entryOpt.get(), sparql);
+                return new Object[] { ComponentVal.ok(ComponentVal.list(bindings)) };
+            } catch (SinkSparqlEngine.SyntaxError e) {
+                return new Object[] { ComponentVal.err(sinkQueryError("syntax-error",
+                    "sink-query-callbacks: SPARQL parse failed for sink '"
+                    + sinkName + "': " + e.getMessage())) };
+            } catch (SinkSparqlEngine.BackendError e) {
+                return new Object[] { ComponentVal.err(sinkQueryError("backend-error",
+                    "sink-query-callbacks: evaluation failed for sink '"
+                    + sinkName + "': " + e.getMessage())) };
+            }
         };
     }
 
