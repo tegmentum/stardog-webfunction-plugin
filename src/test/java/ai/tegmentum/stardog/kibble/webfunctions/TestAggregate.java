@@ -12,16 +12,31 @@ import java.util.Optional;
 import static com.complexible.stardog.plan.filter.functions.AbstractFunction.assertStringLiteral;
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * SPARQL-surface tests for wf:agg. Ports the pre-migration TestAggregate
+ * (which loaded the retired MODULE aggregate/sum.wasm) onto the shared
+ * example-sum-aggregate component from webfunctions, bundled here at
+ * src/test/resources/integration/example_sum_aggregate.wasm.
+ *
+ * <p>The wasm's aggregate.step reads one xsd:integer-shaped literal
+ * per row and adds it to a running accumulator; aggregate.finish
+ * emits the total as xsd:integer. StardogWasmInstance.componentAggregateStep
+ * loops multiplicity times per row so SPARQL bag semantics
+ * (VALUES ?a { 1 1 1 1 2 3 4 } collapsed to distinct + counts) still
+ * produces the arithmetic sum.
+ */
 public class TestAggregate extends AbstractStardogTest {
 
-    final String queryHeader = WebFunctionVocabulary.sparqlPrefix("wf", "0.0.0") +
-            " prefix f: <file:src/test/rust/target/wasm32-unknown-unknown/release/> ";
+    private static final String WASM =
+            "file:src/test/resources/integration/example_sum_aggregate.wasm";
+
+    final String queryHeader = WebFunctionVocabulary.sparqlPrefix("wf", "0.0.0");
 
     @Test
     public void testSum() {
 
         final String aQuery = queryHeader +
-        " select (wf:agg(str(f:sum.wasm), ?a) AS ?result)  WHERE { VALUES ?a { 1 2 3 1}} ";
+        " select (wf:agg(\"" + WASM + "\", ?a) AS ?result)  WHERE { VALUES ?a { 1 2 3 1}} ";
 
         try (final SelectQueryResult aResult = connection.select(aQuery).execute()) {
 
@@ -40,7 +55,7 @@ public class TestAggregate extends AbstractStardogTest {
     public void testMultiplicity() {
 
         final String aQuery = queryHeader +
-                " select (wf:agg(str(f:sum.wasm), ?a) AS ?result)  WHERE { VALUES ?a { 1 1 1 1 2 3 4 } } ";
+                " select (wf:agg(\"" + WASM + "\", ?a) AS ?result)  WHERE { VALUES ?a { 1 1 1 1 2 3 4 } } ";
 
         try (final SelectQueryResult aResult = connection.select(aQuery).execute()) {
 
@@ -59,7 +74,7 @@ public class TestAggregate extends AbstractStardogTest {
     public void testSumWithGroupBy() {
 
         final String aQuery = queryHeader +
-                " select ?group (wf:agg(str(f:sum.wasm), ?value) AS ?result)  WHERE { VALUES (?group ?value) { (1 2) (1 3) (2 4) (2 5) }} GROUP BY ?group ORDER BY ?group";
+                " select ?group (wf:agg(\"" + WASM + "\", ?value) AS ?result)  WHERE { VALUES (?group ?value) { (1 2) (1 3) (2 4) (2 5) }} GROUP BY ?group ORDER BY ?group";
 
         try (final SelectQueryResult selectQueryResult = connection.select(aQuery).execute()) {
 
