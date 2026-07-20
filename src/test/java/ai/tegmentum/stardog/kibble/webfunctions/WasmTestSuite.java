@@ -81,8 +81,15 @@ import java.nio.charset.Charset;
     TestServiceQuery.class,
     // Wave A - sink registry + real impls for sink-callbacks /
     // sink-query-callbacks / document-sink-callbacks.
+    // Wave D upgraded execute-sink-select from a targeted backend-
+    // error stub to a real per-invocation MemoryStore + SPARQL
+    // evaluator; TestSinkMarshallers covers the WIT<->rdf4j value /
+    // quad / binding conversion round-trips, TestSinkSparqlEngine
+    // covers the engine's lifecycle + error taxonomy.
     TestSinkRegistry.class,
     TestSinkCallbacks.class,
+    TestSinkMarshallers.class,
+    TestSinkSparqlEngine.class,
     TestSinkQueryCallbacks.class,
     TestDocumentSinkCallbacks.class,
     // Wave C - fulltext registry + real impls for
