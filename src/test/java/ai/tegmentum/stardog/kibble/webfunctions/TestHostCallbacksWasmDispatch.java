@@ -147,6 +147,246 @@ public class TestHostCallbacksWasmDispatch {
         assertThat(term.getPayload().orElseThrow().asString()).isEqualTo("urn:test:foo");
     }
 
+    // ---- function-name honoring -------------------------------------
+
+    /**
+     * The invoke-wasm dispatch must forward the caller's function-name
+     * argument to the {@link HostCallbacks.CalleeInvoker} verbatim so a
+     * multi-function callee (or any callee that wants to gate on the
+     * name) can route by exact match. Prior to F3a the argument was
+     * decoded off the wire but dropped on the floor.
+     */
+    @Test
+    public void invokeWasmV1_functionNameThreadedToInvoker() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        final AtomicReference<String> seenName = new AtomicReference<>();
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body)
+                    throws Exception {
+                seenName.set(functionName);
+                try (SelectQueryResult rs = singleBindingResult("value_0",
+                        Values.iri("urn:test:foo"))) {
+                    return body.apply(rs);
+                }
+            }
+        };
+        final Object[] out = HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.string("my-filter"),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm",
+                HostCallbacks.CalleeReturnShape.SINGLE_TERM,
+                mock);
+        assertThat(seenName.get()).isEqualTo("my-filter");
+        final ComponentResult result = ((ComponentVal) out[0]).asResult();
+        assertThat(result.isOk()).isTrue();
+    }
+
+    /**
+     * A callee whose {@code extension.register()} export does not
+     * advertise the requested function name surfaces
+     * {@link StardogWasmInstance.NoSuchFilterFunctionException} out of
+     * the invoker. The dispatch must map that to the closest existing
+     * wasm-call-error arm — {@code not-found} — so a guest catching the
+     * callback sees a typed result rather than a raw trap.
+     */
+    @Test
+    public void invokeWasmV1_nameMismatchMapsToNotFound() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body)
+                    throws Exception {
+                throw new StardogWasmInstance.NoSuchFilterFunctionException(
+                        "component does not export filter function '" + functionName + "'; "
+                        + "available: other-fn");
+            }
+        };
+        final Object[] out = HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.string("missing-fn"),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm",
+                HostCallbacks.CalleeReturnShape.SINGLE_TERM,
+                mock);
+        final ComponentResult result = ((ComponentVal) out[0]).asResult();
+        assertThat(result.isErr()).isTrue();
+        final ComponentVariant err = result.getErr().orElseThrow().asVariant();
+        assertThat(err.getCaseName()).isEqualTo("not-found");
+        assertThat(err.getPayload().orElseThrow().asString())
+                .contains("missing-fn")
+                .contains("does not export filter function");
+    }
+
+    /**
+     * Same rule applies when the callee happens to export a single
+     * filter function but the caller's name doesn't match it. The
+     * legacy pick-first-descriptor auto-discovery must NOT silently
+     * fall through — that's the bug we're fixing.
+     */
+    @Test
+    public void invokeWasmV1_nameMismatchOnSingleFunctionCallee_stillNotFound() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body)
+                    throws Exception {
+                // Simulate a callee that exports exactly one function
+                // whose name is not what the caller asked for.
+                throw new StardogWasmInstance.NoSuchFilterFunctionException(
+                        "component does not export filter function '" + functionName + "'; "
+                        + "available: the-only-fn");
+            }
+        };
+        final Object[] out = HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.string("wrong-name"),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm",
+                HostCallbacks.CalleeReturnShape.SINGLE_TERM,
+                mock);
+        final ComponentResult result = ((ComponentVal) out[0]).asResult();
+        assertThat(result.isErr()).isTrue();
+        final ComponentVariant err = result.getErr().orElseThrow().asVariant();
+        assertThat(err.getCaseName()).isEqualTo("not-found");
+    }
+
+    /**
+     * Legacy backward compatibility: when the caller leaves
+     * {@code function-name} empty AND the callee exports exactly one
+     * filter, the dispatch still resolves via auto-discovery. The
+     * empty name lands at the invoker as-is (empty string), and the
+     * PROD invoker will threading it through
+     * {@link StardogWasmInstance#evaluate(String, Value...)} where the
+     * single-registered-function branch fires.
+     */
+    @Test
+    public void invokeWasmV1_emptyNameSingleFunctionCallee_stillDispatches() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        final AtomicReference<String> seenName = new AtomicReference<>();
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body)
+                    throws Exception {
+                seenName.set(functionName);
+                // Single-function callees still auto-discover in the
+                // strict evaluate path; mock simulates that success.
+                try (SelectQueryResult rs = singleBindingResult("value_0",
+                        Values.literal("auto"))) {
+                    return body.apply(rs);
+                }
+            }
+        };
+        final Object[] out = HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.string(""),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm",
+                HostCallbacks.CalleeReturnShape.SINGLE_TERM,
+                mock);
+        // Empty function-name is preserved on the wire — the invoker
+        // sees the empty string and defers to the callee's registered
+        // surface for auto-discovery.
+        assertThat(seenName.get()).isEqualTo("");
+        final ComponentResult result = ((ComponentVal) out[0]).asResult();
+        assertThat(result.isOk()).isTrue();
+    }
+
+    /**
+     * When the caller leaves {@code function-name} empty but the
+     * callee exports more than one filter, auto-discovery would silently
+     * pick the first — which is exactly the bug the task description
+     * flagged. The strict evaluate path surfaces
+     * {@link StardogWasmInstance.AmbiguousFilterFunctionException}
+     * which the dispatch maps to {@code invocation-error} (the closest
+     * existing wasm-call-error arm covering "caller omitted required
+     * disambiguator").
+     */
+    @Test
+    public void invokeWasmV1_emptyNameMultiFunctionCallee_ambiguousInvocationError() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body)
+                    throws Exception {
+                // Simulate the strict evaluate path detecting a
+                // multi-function callee with no name selector.
+                throw new StardogWasmInstance.AmbiguousFilterFunctionException(
+                        "component exports multiple filter functions (a, b); "
+                        + "caller must specify function-name");
+            }
+        };
+        final Object[] out = HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.string(""),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm",
+                HostCallbacks.CalleeReturnShape.SINGLE_TERM,
+                mock);
+        final ComponentResult result = ((ComponentVal) out[0]).asResult();
+        assertThat(result.isErr()).isTrue();
+        final ComponentVariant err = result.getErr().orElseThrow().asVariant();
+        assertThat(err.getCaseName()).isEqualTo("invocation-error");
+        assertThat(err.getPayload().orElseThrow().asString())
+                .contains("multiple filter functions")
+                .contains("caller must specify function-name");
+    }
+
+    /**
+     * The property-function shape (invoke-wasm-service) has no
+     * function-name argument on the wire, so the invoker must see a
+     * null selector to preserve the "route to the single registered
+     * property function" contract.
+     */
+    @Test
+    public void invokeWasmService_functionNameIsNull() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        final AtomicReference<String> seenName = new AtomicReference<>("SENTINEL");
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body)
+                    throws Exception {
+                seenName.set(functionName);
+                try (SelectQueryResult rs = singleBindingResult("value_0",
+                        Values.literal("svc"))) {
+                    return body.apply(rs);
+                }
+            }
+        };
+        HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm-service",
+                HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
+                mock);
+        assertThat(seenName.get()).isNull();
+    }
+
     // ---- capability-denied path -------------------------------------
 
     @Test
