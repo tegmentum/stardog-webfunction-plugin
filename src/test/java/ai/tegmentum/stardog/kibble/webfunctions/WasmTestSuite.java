@@ -83,6 +83,11 @@ import java.nio.charset.Charset;
     TestSinkCallbacks.class,
     TestSinkQueryCallbacks.class,
     TestDocumentSinkCallbacks.class,
+    // Wave C - fulltext registry + real impls for
+    // fulltext-callbacks (insert-documents / delete-documents /
+    // search-index) over the in-memory InMemoryFulltextRegistry.
+    TestInMemoryFulltextRegistry.class,
+    TestFulltextCallbacks.class,
     TestToUpper.class,
     TestWasmCalleeAllowlist.class,
     TestWasmCustomSectionReader.class,
