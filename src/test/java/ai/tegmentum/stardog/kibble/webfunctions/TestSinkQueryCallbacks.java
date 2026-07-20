@@ -9,17 +9,21 @@ import org.junit.Before;
 import org.junit.Test;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * Wave A coverage for {@code sink-query-callbacks}. The
- * {@code scan-sink-quads} handler lands a real linear-filter impl
- * against the sink's accumulated deque; {@code execute-sink-select}
- * remains deferred (no SPARQL evaluator on the in-memory backend) and
- * returns a targeted {@code backend-error} — deliberately NOT
- * {@code not-permitted}: capability checks pass, the backend just
- * cannot evaluate the query text.
+ * Coverage for {@code sink-query-callbacks}. {@code scan-sink-quads}
+ * lands a real linear-filter impl against the sink's accumulated
+ * deque. {@code execute-sink-select} — Wave A stubbed with a targeted
+ * {@code backend-error} — is now a real SPARQL SELECT evaluator over
+ * the sink's quads via
+ * {@link SinkSparqlEngine#evaluate(SinkEntry, String)}. Tests migrated
+ * accordingly: the former "returns backend-error" negative assertion
+ * is replaced by happy-path / parse-error / capability-denial /
+ * no-such-sink positive coverage.
  */
 public class TestSinkQueryCallbacks {
 
@@ -144,23 +148,67 @@ public class TestSinkQueryCallbacks {
     }
 
     @Test
-    public void executeSelectRegisteredSinkReturnsBackendErrorNotNotPermitted() {
-        // A registered sink still returns backend-error - the in-memory
-        // backend does not embed a SPARQL evaluator. Deliberately NOT
-        // not-permitted (capability checks pass; this is a backend-
-        // capability gap, not a policy denial).
+    public void executeSelectHappyPathReturnsFlatBindingList() {
+        // Setup: alpha holds three quads across two subjects. SELECT
+        // ?s ?p ?o -> 3 solutions x 3 bound vars = 9 flat binding
+        // records per WIT contract's split-on-repeated-variable-identity.
         CallbackContext.bind();
         final Object[] out = HostCallbacks.sinkQueryExecuteSelect().execute(new Object[] {
                 ComponentVal.string("alpha"),
-                ComponentVal.string("SELECT * WHERE { ?s ?p ?o }")
+                ComponentVal.string("SELECT ?s ?p ?o WHERE { ?s ?p ?o }")
+        });
+        final ComponentResult result = ((ComponentVal) out[0]).asResult();
+        assertThat(result.isOk()).isTrue();
+        final List<ComponentVal> bindings = result.getOk().orElseThrow().asList();
+        assertThat(bindings).hasSize(9);
+        // First entry is a {variable, value} binding record.
+        assertThat(bindings.get(0).asRecord().get("variable").asString()).isEqualTo("s");
+    }
+
+    @Test
+    public void executeSelectBgpFilterReducesToMatchingSolution() {
+        CallbackContext.bind();
+        final Object[] out = HostCallbacks.sinkQueryExecuteSelect().execute(new Object[] {
+                ComponentVal.string("alpha"),
+                ComponentVal.string(
+                        "SELECT ?o WHERE { <http://ex/s1> <http://ex/p> ?o }")
+        });
+        final List<ComponentVal> bindings = ((ComponentVal) out[0]).asResult()
+                .getOk().orElseThrow().asList();
+        assertThat(bindings).hasSize(1);
+        assertThat(bindings.get(0).asRecord().get("value").asVariant()
+                .getPayload().orElseThrow().asString())
+                .isEqualTo("http://ex/o1");
+    }
+
+    @Test
+    public void executeSelectMalformedSparqlReturnsSyntaxError() {
+        // SPARQLParser rejects the text -> SinkSparqlEngine.SyntaxError
+        // -> WIT sink-query-error::syntax-error. Deliberately NOT
+        // backend-error: syntax mistakes are guest-side bugs the
+        // extension reacts to at boot; backend outages are per-call.
+        CallbackContext.bind();
+        final Object[] out = HostCallbacks.sinkQueryExecuteSelect().execute(new Object[] {
+                ComponentVal.string("alpha"),
+                ComponentVal.string("this is not sparql")
         });
         final ComponentVariant err = ((ComponentVal) out[0]).asResult()
                 .getErr().orElseThrow().asVariant();
-        assertThat(err.getCaseName()).isEqualTo("backend-error");
-        assertThat(err.getCaseName()).isNotEqualTo("not-permitted");
-        assertThat(err.getPayload().orElseThrow().asString())
-                .contains("not yet implemented")
-                .contains("scan-sink-quads");
+        assertThat(err.getCaseName()).isEqualTo("syntax-error");
+    }
+
+    @Test
+    public void executeSelectAskShapeQueryReturnsSyntaxError() {
+        // WIT contract: execute-sink-select is SELECT-only. CONSTRUCT
+        // parses but does not satisfy the ParsedTupleQuery gate.
+        CallbackContext.bind();
+        final Object[] out = HostCallbacks.sinkQueryExecuteSelect().execute(new Object[] {
+                ComponentVal.string("alpha"),
+                ComponentVal.string("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }")
+        });
+        final ComponentVariant err = ((ComponentVal) out[0]).asResult()
+                .getErr().orElseThrow().asVariant();
+        assertThat(err.getCaseName()).isEqualTo("syntax-error");
     }
 
     @Test
@@ -173,5 +221,27 @@ public class TestSinkQueryCallbacks {
         final ComponentVariant err = ((ComponentVal) out[0]).asResult()
                 .getErr().orElseThrow().asVariant();
         assertThat(err.getCaseName()).isEqualTo("no-such-sink");
+    }
+
+    @Test
+    public void executeSelectCapabilityDenialShortCircuitsBeforeEval() {
+        // With capability on and sink-query-callbacks denied,
+        // enforceCapability throws PerCallDenied BEFORE the engine
+        // parses the SPARQL or spins up a MemoryStore. Proves the gate
+        // fires ahead of the real evaluator the same way it did ahead
+        // of the Wave A stub.
+        CapabilityEnforcer.install(CapabilityEnforcer.create());
+        CapabilityEnforcer.setEnabled(true);
+        final CallbackContext ctx = CallbackContext.bind();
+        ctx.setCapabilityGrant(TestSinkCallbacks.grantWithInterfaces(
+                Set.of("graph-callbacks")));
+        final Throwable thrown = catchThrowable(() ->
+                HostCallbacks.sinkQueryExecuteSelect().execute(new Object[] {
+                        ComponentVal.string("alpha"),
+                        ComponentVal.string("SELECT * WHERE { ?s ?p ?o }")
+                }));
+        assertThat(thrown).isInstanceOf(WfCapabilityError.PerCallDenied.class);
+        assertThat(((WfCapabilityError.PerCallDenied) thrown).interfaceName())
+                .isEqualTo("sink-query-callbacks");
     }
 }
