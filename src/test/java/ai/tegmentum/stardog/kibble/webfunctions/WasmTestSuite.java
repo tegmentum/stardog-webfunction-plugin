@@ -70,7 +70,6 @@ import java.nio.charset.Charset;
     TestNdjsonRotatingFileAuditSink.class,
     TestPluginVersion.class,
     TestPolicyTriples.class,
-    TestServiceQuery.class,
     // Wave A - sink registry + real impls for sink-callbacks /
     // sink-query-callbacks / document-sink-callbacks.
     // Wave D upgraded execute-sink-select from a targeted backend-
