@@ -14,17 +14,16 @@ import java.util.ArrayList;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * MVP-stub coverage for the two host-callback interfaces still in stub
- * shape after Wave A: {@code tracker-sink-callbacks} (Wave B —
- * SQLite-backed tracker registry) and {@code fulltext-callbacks}
- * (Wave C — Stardog BITES adapter, once its plugin-side surface
- * exists).
+ * MVP-stub coverage for the one host-callback family still in stub
+ * shape: {@code tracker-sink-callbacks} (Wave B — SQLite-backed
+ * tracker registry).
  *
- * <p>Sink-family write / read / document interfaces have moved to
+ * <p>Sink-family write / read / document interfaces moved to
  * {@link TestSinkCallbacks}, {@link TestSinkQueryCallbacks}, and
- * {@link TestDocumentSinkCallbacks} respectively; every dispatch there
- * routes through the {@link SinkRegistry} rather than short-circuiting
- * to {@code not-permitted}.
+ * {@link TestDocumentSinkCallbacks} at Wave A. Fulltext-callbacks
+ * moved to {@link TestFulltextCallbacks} at Wave C — every dispatch
+ * there routes through the {@link InMemoryFulltextRegistry} rather
+ * than short-circuiting to {@code not-permitted}.
  *
  * <p>Drives the {@link WitHostFunction#execute} entry point directly
  * — the stubs are pure Java lambdas with no wasm engine dependency,
@@ -54,9 +53,11 @@ public class TestHostCallbacksSinkStubs {
 
     // sink-callbacks, sink-query-callbacks, and document-sink-callbacks
     // are no longer stubs — see TestSinkCallbacks / TestSinkQueryCallbacks /
-    // TestDocumentSinkCallbacks for the Wave A real-impl coverage. This
-    // file retains coverage of the still-stubbed families: tracker-sink-
-    // callbacks (Wave B) and fulltext-callbacks (Wave C).
+    // TestDocumentSinkCallbacks for the Wave A real-impl coverage.
+    // fulltext-callbacks are likewise no longer stubs — see
+    // TestFulltextCallbacks for the Wave C real-impl coverage. This
+    // file retains coverage of the one still-stubbed family: tracker-
+    // sink-callbacks (Wave B).
 
     // ---- tracker-sink-callbacks --------------------------------------
 
@@ -126,38 +127,8 @@ public class TestHostCallbacksSinkStubs {
         assertNotPermitted(out, "tracker-sink-callbacks", "tracker-count");
     }
 
-    // ---- fulltext-callbacks ------------------------------------------
-
-    @Test
-    public void fulltextInsertDocumentsReturnsNotPermitted() {
-        final CallbackContext ctx = CallbackContext.bind();
-        final Object[] out = HostCallbacks.fulltextInsertDocuments().execute(new Object[] {
-                ComponentVal.string("my-index"),
-                ComponentVal.list(new ArrayList<>())
-        });
-        assertNotPermitted(out, "fulltext-callbacks", "insert-documents");
-    }
-
-    @Test
-    public void fulltextDeleteDocumentsReturnsNotPermitted() {
-        final CallbackContext ctx = CallbackContext.bind();
-        final Object[] out = HostCallbacks.fulltextDeleteDocuments().execute(new Object[] {
-                ComponentVal.string("my-index"),
-                ComponentVal.list(new ArrayList<>())
-        });
-        assertNotPermitted(out, "fulltext-callbacks", "delete-documents");
-    }
-
-    @Test
-    public void fulltextSearchIndexReturnsNotPermitted() {
-        final CallbackContext ctx = CallbackContext.bind();
-        final Object[] out = HostCallbacks.fulltextSearchIndex().execute(new Object[] {
-                ComponentVal.string("my-index"),
-                ComponentVal.string("some query"),
-                ComponentVal.none()
-        });
-        assertNotPermitted(out, "fulltext-callbacks", "search-index");
-    }
+    // fulltext-callbacks stub coverage removed at Wave C — see
+    // TestFulltextCallbacks for the real-impl round-trip tests.
 
     // ---- helpers ------------------------------------------------------
 

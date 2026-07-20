@@ -1882,52 +1882,146 @@ public final class HostCallbacks {
     }
 
     // ---- tegmentum:webfunction/fulltext-callbacks@0.1.0 --------------------
+    //
+    // Wave C — real implementations backed by the in-memory
+    // {@link InMemoryFulltextRegistry}. Mirrors Oxigraph's
+    // InMemoryFulltextImpl reference shape (see
+    // ~/git/oxigraph-webfunction-plugin/crates/host-callbacks-impl/src/lib.rs).
+    //
+    // Index names are declared at plugin startup via
+    // webfunctions.fulltext.indexes; the WIT contract has no runtime
+    // register-index method by design. An unknown index surfaces the
+    // interface's no-such-index arm.
+    //
+    // BITES bridge is deferred — Stardog does ship a BITES full-text
+    // adapter, but its admin surface is not reachable from a
+    // web-function-plugin thread today. Production impls would layer
+    // BITES / Manticore / OpenSearch behind the same three lambdas with
+    // no guest-side change.
 
     /** {@code insert-documents: func(index: string, docs: list<fulltext-document>)
-     *  -> result<u32, fulltext-error>}. */
+     *  -> result<u32, fulltext-error>}. Batch insert-with-replace into
+     *  the named index; returns the count accepted. */
     public static WitHostFunction fulltextInsertDocuments() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
             final String indexName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "fulltext-callbacks", "insert-documents", indexName);
             if (ctx != null) ctx.chargeToll("fulltext-callbacks.insert-documents");
-            return new Object[] { ComponentVal.err(fulltextError("not-permitted",
-                "fulltext-callbacks: insert-documents not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side fulltext-index adapter). Stardog does ship "
-                + "BITES/full-text search, but its admin surface is not accessible from a "
-                + "webfunction-plugin thread today; wiring is deferred. Index requested: '"
-                + indexName + "'.")) };
+            final Optional<FulltextIndex> indexOpt =
+                    InMemoryFulltextRegistry.INSTANCE.index(indexName);
+            if (indexOpt.isEmpty()) {
+                return new Object[] { ComponentVal.err(fulltextError("no-such-index",
+                    "fulltext-callbacks: no index registered under name '" + indexName
+                    + "' — declare it in " + WebFunctionConfig.PROP_FULLTEXT_INDEXES
+                    + " at boot.")) };
+            }
+            final List<ComponentVal> batch = args.length > 1 && args[1] != null
+                    ? ((ComponentVal) args[1]).asList()
+                    : java.util.Collections.emptyList();
+            final FulltextIndex index = indexOpt.get();
+            int accepted = 0;
+            for (final ComponentVal docVal : batch) {
+                final Map<String, ComponentVal> fields = docVal.asRecord();
+                final String id = fields.get("id").asString();
+                final List<FulltextIndex.FieldPair> fieldPairs =
+                        decodeFulltextFields(fields.get("fields"));
+                final String lang = fields.get("lang").asSome()
+                        .map(ComponentVal::asString).orElse(null);
+                index.insertDocument(id, fieldPairs, lang);
+                accepted++;
+            }
+            return new Object[] { ComponentVal.ok(ComponentVal.u32((long) accepted)) };
         };
     }
 
     /** {@code delete-documents: func(index: string, ids: list<string>)
-     *  -> result<u32, fulltext-error>}. */
+     *  -> result<u32, fulltext-error>}. Batch remove by id; returns the
+     *  count actually removed (missing ids do not count). */
     public static WitHostFunction fulltextDeleteDocuments() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
             final String indexName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "fulltext-callbacks", "delete-documents", indexName);
             if (ctx != null) ctx.chargeToll("fulltext-callbacks.delete-documents");
-            return new Object[] { ComponentVal.err(fulltextError("not-permitted",
-                "fulltext-callbacks: delete-documents not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side fulltext-index adapter). Index requested: '"
-                + indexName + "'.")) };
+            final Optional<FulltextIndex> indexOpt =
+                    InMemoryFulltextRegistry.INSTANCE.index(indexName);
+            if (indexOpt.isEmpty()) {
+                return new Object[] { ComponentVal.err(fulltextError("no-such-index",
+                    "fulltext-callbacks: no index registered under name '" + indexName
+                    + "' — declare it in " + WebFunctionConfig.PROP_FULLTEXT_INDEXES
+                    + " at boot.")) };
+            }
+            final List<ComponentVal> ids = args.length > 1 && args[1] != null
+                    ? ((ComponentVal) args[1]).asList()
+                    : java.util.Collections.emptyList();
+            final FulltextIndex index = indexOpt.get();
+            int removed = 0;
+            for (final ComponentVal idVal : ids) {
+                if (index.deleteDocument(idVal.asString())) {
+                    removed++;
+                }
+            }
+            return new Object[] { ComponentVal.ok(ComponentVal.u32((long) removed)) };
         };
     }
 
     /** {@code search-index: func(index: string, query: string, limit: option<u32>)
-     *  -> result<list<fulltext-hit>, fulltext-error>}. */
+     *  -> result<list<fulltext-hit>, fulltext-error>}. Naive case-
+     *  insensitive substring match — see {@link FulltextIndex#search}
+     *  for the algorithm. */
     public static WitHostFunction fulltextSearchIndex() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
             final String indexName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "fulltext-callbacks", "search-index", indexName);
             if (ctx != null) ctx.chargeToll("fulltext-callbacks.search-index");
-            return new Object[] { ComponentVal.err(fulltextError("not-permitted",
-                "fulltext-callbacks: search-index not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side fulltext-index adapter). Index requested: '"
-                + indexName + "'.")) };
+            final Optional<FulltextIndex> indexOpt =
+                    InMemoryFulltextRegistry.INSTANCE.index(indexName);
+            if (indexOpt.isEmpty()) {
+                return new Object[] { ComponentVal.err(fulltextError("no-such-index",
+                    "fulltext-callbacks: no index registered under name '" + indexName
+                    + "' — declare it in " + WebFunctionConfig.PROP_FULLTEXT_INDEXES
+                    + " at boot.")) };
+            }
+            final String query = args.length > 1 && args[1] != null
+                    ? ((ComponentVal) args[1]).asString() : "";
+            final Integer limit = args.length > 2 && args[2] != null
+                    ? decodeOptionalU32((ComponentVal) args[2]).orElse(null) : null;
+            final List<FulltextIndex.Hit> hits = indexOpt.get().search(query, limit);
+            final List<ComponentVal> encoded = new ArrayList<>(hits.size());
+            for (final FulltextIndex.Hit hit : hits) {
+                final Map<String, ComponentVal> hitFields = new LinkedHashMap<>();
+                // WIT `fulltext-hit.subject` is a `term`. Encode the
+                // document id as a named-node — mirrors the Oxigraph
+                // reference impl exactly.
+                hitFields.put("subject",
+                        ComponentVal.variant("named-node", ComponentVal.string(hit.id())));
+                hitFields.put("score", ComponentVal.f64(hit.score()));
+                // Reference impl leaves snippets unset — production
+                // backends (Manticore highlighting, OpenSearch's
+                // highlight blocks) fill this in.
+                hitFields.put("snippet", ComponentVal.none());
+                encoded.add(ComponentVal.record(hitFields));
+            }
+            return new Object[] { ComponentVal.ok(ComponentVal.list(encoded)) };
         };
+    }
+
+    /** Decode a WIT {@code list<tuple<string, string>>} field list into
+     *  the {@link FulltextIndex.FieldPair} carriers the registry
+     *  stores. */
+    private static List<FulltextIndex.FieldPair> decodeFulltextFields(final ComponentVal listVal) {
+        if (listVal == null) return java.util.Collections.emptyList();
+        final List<ComponentVal> pairs = listVal.asList();
+        final List<FulltextIndex.FieldPair> out = new ArrayList<>(pairs.size());
+        for (final ComponentVal pair : pairs) {
+            final List<ComponentVal> tuple = pair.asTuple();
+            final String predicate = tuple.get(0).asString();
+            final String value = tuple.get(1).asString();
+            out.add(new FulltextIndex.FieldPair(predicate, value));
+        }
+        return out;
     }
 
     private static ComponentVal fulltextError(final String armName, final String message) {
