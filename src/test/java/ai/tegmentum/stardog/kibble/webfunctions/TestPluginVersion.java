@@ -13,8 +13,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestPluginVersion extends AbstractStardogTest {
 
-    final String queryHeader = WebFunctionVocabulary.sparqlPrefix("wf", "0.0.0") +
-            " prefix f: <file:src/test/rust/target/wasm32-unknown-unknown/release/> ";
+    // wf:pluginVersion() takes no arguments and does not resolve a wasm URL,
+    // so no fixture prefix is needed. Kept the SPARQL prefix declaration
+    // for wf: only.
+    final String queryHeader = WebFunctionVocabulary.sparqlPrefix("wf", "0.0.0");
 
     @Test
     public void testPluginVersion() {
