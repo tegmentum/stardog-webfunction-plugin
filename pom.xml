@@ -171,6 +171,32 @@
             <artifactId>sqlite-jdbc</artifactId>
             <version>3.46.1.3</version>
         </dependency>
+        <!--
+            Wave D (sink-sparql) — RDF4J MemoryStore + SPARQL parser
+            back the {@code sink-query-callbacks::execute-sink-select}
+            handler. Wave A stubbed this with a targeted
+            {@code backend-error}; the real evaluator spins a
+            per-invocation {@link org.eclipse.rdf4j.sail.memory.MemoryStore}
+            over the sink's accumulated quads (see
+            {@link ai.tegmentum.stardog.kibble.webfunctions.SinkSparqlEngine}).
+            Stardog ships its own {@code com.stardog.stark.*} fork of
+            RDF4J — a different namespace — so shading here does not
+            collide with the {@code provided}-scope Stardog classes.
+            {@code rdf4j-repository-sail} deliberately excluded: the
+            engine drives {@link org.eclipse.rdf4j.sail.SailConnection}
+            directly rather than through the higher-level Repository
+            surface.
+        -->
+        <dependency>
+            <groupId>org.eclipse.rdf4j</groupId>
+            <artifactId>rdf4j-sail-memory</artifactId>
+            <version>6.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.rdf4j</groupId>
+            <artifactId>rdf4j-queryparser-sparql</artifactId>
+            <version>6.0.0</version>
+        </dependency>
     </dependencies>
 
     <repositories>
@@ -308,6 +334,27 @@
                                 <include>**</include>
                             </includes>
                         </filter>
+                        <!--
+                            Wave D (sink-sparql) — force-include every
+                            class in the RDF4J jars we shade. RDF4J's
+                            SPARQL parser, Rio serializers, sail
+                            factories, and query-algebra function
+                            registry all load via ServiceLoader
+                            (META-INF/services), so `<minimizeJar/>`'s
+                            reachability analysis would strip
+                            SPI-registered classes even though the
+                            services descriptor still points at them.
+                            Keeps SinkSparqlEngine from crashing at
+                            evaluate time with
+                            NoClassDefFoundError inside
+                            SPARQLParser / Evaluator setup.
+                        -->
+                        <filter>
+                            <artifact>org.eclipse.rdf4j:*</artifact>
+                            <includes>
+                                <include>**</include>
+                            </includes>
+                        </filter>
                     </filters>
                     <relocations>
                         <relocation>
@@ -337,6 +384,29 @@
                                     <exclude>org.assertj:assertj-core</exclude>
                                     <exclude>org.hamcrest:hamcrest-all</exclude>
                                     <exclude>ai.tegmentum:wasmtime4j-native-loader</exclude>
+                                    <!--
+                                        Wave D (sink-sparql) — RDF4J's
+                                        rdf4j-rio-api transitively pulls
+                                        ten `com.aayushatharva.brotli4j:
+                                        native-*` platform jars (~50 MB
+                                        of `.so` / `.dylib` / `.dll`
+                                        binaries for Linux aarch64 /
+                                        armv7 / ppc64le / riscv64 /
+                                        s390x / x86_64, macOS aarch64 /
+                                        x86_64, Windows aarch64 /
+                                        x86_64) so Rio can Brotli-
+                                        decompress remote HTTP bodies.
+                                        Sink SPARQL evaluation reads
+                                        from an in-memory Sail — never
+                                        touches HTTP Rio — so the
+                                        native jars are dead weight in
+                                        the shaded plugin jar. Prune
+                                        the artifact set; the pure-Java
+                                        brotli4j core jar stays reachable
+                                        via `<minimizeJar/>` in case Rio
+                                        actually needs it.
+                                    -->
+                                    <exclude>com.aayushatharva.brotli4j:native-*</exclude>
                                 </excludes>
                             </artifactSet>
                         </configuration>
