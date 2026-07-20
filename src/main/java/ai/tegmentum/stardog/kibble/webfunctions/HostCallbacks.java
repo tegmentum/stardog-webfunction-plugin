@@ -1651,4 +1651,57 @@ public final class HostCallbacks {
     private static ComponentVal trackerError(final String armName, final String message) {
         return ComponentVal.variant(armName, ComponentVal.string(message));
     }
+
+    // ---- tegmentum:webfunction/fulltext-callbacks@0.1.0 --------------------
+
+    /** {@code insert-documents: func(index: string, docs: list<fulltext-document>)
+     *  -> result<u32, fulltext-error>}. */
+    public static WitHostFunction fulltextInsertDocuments() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String indexName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "fulltext-callbacks", "insert-documents", indexName);
+            if (ctx != null) ctx.chargeToll("fulltext-callbacks.insert-documents");
+            return new Object[] { ComponentVal.err(fulltextError("not-permitted",
+                "fulltext-callbacks: insert-documents not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side fulltext-index adapter). Stardog does ship "
+                + "BITES/full-text search, but its admin surface is not accessible from a "
+                + "webfunction-plugin thread today; wiring is deferred. Index requested: '"
+                + indexName + "'.")) };
+        };
+    }
+
+    /** {@code delete-documents: func(index: string, ids: list<string>)
+     *  -> result<u32, fulltext-error>}. */
+    public static WitHostFunction fulltextDeleteDocuments() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String indexName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "fulltext-callbacks", "delete-documents", indexName);
+            if (ctx != null) ctx.chargeToll("fulltext-callbacks.delete-documents");
+            return new Object[] { ComponentVal.err(fulltextError("not-permitted",
+                "fulltext-callbacks: delete-documents not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side fulltext-index adapter). Index requested: '"
+                + indexName + "'.")) };
+        };
+    }
+
+    /** {@code search-index: func(index: string, query: string, limit: option<u32>)
+     *  -> result<list<fulltext-hit>, fulltext-error>}. */
+    public static WitHostFunction fulltextSearchIndex() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String indexName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "fulltext-callbacks", "search-index", indexName);
+            if (ctx != null) ctx.chargeToll("fulltext-callbacks.search-index");
+            return new Object[] { ComponentVal.err(fulltextError("not-permitted",
+                "fulltext-callbacks: search-index not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side fulltext-index adapter). Index requested: '"
+                + indexName + "'.")) };
+        };
+    }
+
+    private static ComponentVal fulltextError(final String armName, final String message) {
+        return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
 }

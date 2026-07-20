@@ -368,6 +368,24 @@ public class StardogWasmInstance implements Closeable {
                 "tegmentum:webfunction/tracker-sink-callbacks@0.1.0#tracker-count",
                 HostCallbacks.trackerCount());
         }
+        // tegmentum:webfunction/fulltext-callbacks@0.1.0 —
+        // bulk-document admin against a substrate-declared search
+        // index. MVP stub — no fulltext-index adapter on the
+        // Stardog plugin (Stardog ships BITES/full-text but its
+        // admin surface is not accessible from a plugin thread
+        // today); every dispatch returns fulltext-error
+        // `not-permitted`.
+        if (grant == null || grant.allowsInterface("fulltext-callbacks")) {
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/fulltext-callbacks@0.1.0#insert-documents",
+                HostCallbacks.fulltextInsertDocuments());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/fulltext-callbacks@0.1.0#delete-documents",
+                HostCallbacks.fulltextDeleteDocuments());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/fulltext-callbacks@0.1.0#search-index",
+                HostCallbacks.fulltextSearchIndex());
+        }
         this.instance = (ComponentInstance) cached.instantiate(
                 componentLinker.build(),
                 WebFunctionConfig.componentConfigFromSystemProperties());
