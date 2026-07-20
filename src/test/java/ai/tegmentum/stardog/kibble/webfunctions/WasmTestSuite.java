@@ -90,6 +90,16 @@ import java.nio.charset.Charset;
     // search-index) over the in-memory InMemoryFulltextRegistry.
     TestInMemoryFulltextRegistry.class,
     TestFulltextCallbacks.class,
+    // Wave B - SQLite JDBC-backed tracker-sink registry + real impls
+    // for tracker-sink-callbacks (register-tracker-tables,
+    // tracker-insert / upsert / select / delete / count). Pure JVM,
+    // no wasm engine or Stardog required — SqliteTrackerBackend uses
+    // a per-test SQLite file (TemporaryFolder) for isolation.
+    TestTrackerSchema.class,
+    TestTrackerValueMarshaller.class,
+    TestTrackerWhere.class,
+    TestSqliteTrackerBackend.class,
+    TestTrackerSinkCallbacks.class,
     TestToUpper.class,
     TestWasmCalleeAllowlist.class,
     TestWasmCustomSectionReader.class,
