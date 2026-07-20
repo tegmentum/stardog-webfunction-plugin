@@ -62,6 +62,7 @@ import java.nio.charset.Charset;
     TestHostAllowlist.class,
     TestHostCallbacksInvokerSubject.class,
     TestHostCallbacksPhase5.class,
+    TestHostCallbacksSinkStubs.class,
     TestHostCallbacksWarnOnUndeclared.class,
     TestHostCallbacksWasmDispatch.class,
     TestHttpPathAllowlist.class,
