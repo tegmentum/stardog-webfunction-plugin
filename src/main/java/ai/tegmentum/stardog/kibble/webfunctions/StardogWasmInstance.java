@@ -316,6 +316,18 @@ public class StardogWasmInstance implements Closeable {
                 "tegmentum:webfunction/sink-callbacks@0.1.0#emit-quads",
                 HostCallbacks.sinkEmitQuads());
         }
+        // tegmentum:webfunction/sink-query-callbacks@0.1.0 —
+        // typed-quad / SPARQL SELECT read half. Same MVP-stub
+        // rationale as sink-callbacks — no sink registry, every
+        // dispatch returns sink-query-error `not-permitted`.
+        if (grant == null || grant.allowsInterface("sink-query-callbacks")) {
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/sink-query-callbacks@0.1.0#execute-sink-select",
+                HostCallbacks.sinkQueryExecuteSelect());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/sink-query-callbacks@0.1.0#scan-sink-quads",
+                HostCallbacks.sinkQueryScanQuads());
+        }
         this.instance = (ComponentInstance) cached.instantiate(
                 componentLinker.build(),
                 WebFunctionConfig.componentConfigFromSystemProperties());

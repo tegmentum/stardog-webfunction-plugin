@@ -1467,4 +1467,40 @@ public final class HostCallbacks {
     private static ComponentVal sinkError(final String armName, final String message) {
         return ComponentVal.variant(armName, ComponentVal.string(message));
     }
+
+    // ---- tegmentum:webfunction/sink-query-callbacks@0.1.0 ------------------
+
+    /** {@code execute-sink-select: func(sink-name: string, sparql: string)
+     *  -> result<list<binding>, sink-query-error>}. */
+    public static WitHostFunction sinkQueryExecuteSelect() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "sink-query-callbacks", "execute-sink-select", sinkName);
+            if (ctx != null) ctx.chargeToll("sink-query-callbacks.execute-sink-select");
+            return new Object[] { ComponentVal.err(sinkQueryError("not-permitted",
+                "sink-query-callbacks: execute-sink-select not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side sink registry). Sink name requested: '"
+                + sinkName + "'.")) };
+        };
+    }
+
+    /** {@code scan-sink-quads: func(sink-name: string, option<term>, option<term>, option<term>)
+     *  -> result<list<quad>, sink-query-error>}. */
+    public static WitHostFunction sinkQueryScanQuads() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "sink-query-callbacks", "scan-sink-quads", sinkName);
+            if (ctx != null) ctx.chargeToll("sink-query-callbacks.scan-sink-quads");
+            return new Object[] { ComponentVal.err(sinkQueryError("not-permitted",
+                "sink-query-callbacks: scan-sink-quads not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side sink registry). Sink name requested: '"
+                + sinkName + "'.")) };
+        };
+    }
+
+    private static ComponentVal sinkQueryError(final String armName, final String message) {
+        return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
 }
