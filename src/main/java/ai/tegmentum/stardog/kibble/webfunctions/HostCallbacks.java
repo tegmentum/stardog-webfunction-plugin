@@ -1503,4 +1503,55 @@ public final class HostCallbacks {
     private static ComponentVal sinkQueryError(final String armName, final String message) {
         return ComponentVal.variant(armName, ComponentVal.string(message));
     }
+
+    // ---- tegmentum:webfunction/document-sink-callbacks@0.1.0 ---------------
+
+    /** {@code put-document: func(sink-name: string, doc: document)
+     *  -> result<_, document-sink-error>}. */
+    public static WitHostFunction documentSinkPutDocument() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "document-sink-callbacks", "put-document", sinkName);
+            if (ctx != null) ctx.chargeToll("document-sink-callbacks.put-document");
+            return new Object[] { ComponentVal.err(documentSinkError("not-permitted",
+                "document-sink-callbacks: put-document not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side document-sink registry). Sink name requested: '"
+                + sinkName + "'.")) };
+        };
+    }
+
+    /** {@code get-document: func(sink-name: string, key: term)
+     *  -> result<document, document-sink-error>}. */
+    public static WitHostFunction documentSinkGetDocument() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "document-sink-callbacks", "get-document", sinkName);
+            if (ctx != null) ctx.chargeToll("document-sink-callbacks.get-document");
+            return new Object[] { ComponentVal.err(documentSinkError("not-permitted",
+                "document-sink-callbacks: get-document not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side document-sink registry). Sink name requested: '"
+                + sinkName + "'.")) };
+        };
+    }
+
+    /** {@code delete-document: func(sink-name: string, key: term)
+     *  -> result<_, document-sink-error>}. */
+    public static WitHostFunction documentSinkDeleteDocument() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "document-sink-callbacks", "delete-document", sinkName);
+            if (ctx != null) ctx.chargeToll("document-sink-callbacks.delete-document");
+            return new Object[] { ComponentVal.err(documentSinkError("not-permitted",
+                "document-sink-callbacks: delete-document not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side document-sink registry). Sink name requested: '"
+                + sinkName + "'.")) };
+        };
+    }
+
+    private static ComponentVal documentSinkError(final String armName, final String message) {
+        return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
 }

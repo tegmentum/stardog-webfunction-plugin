@@ -328,6 +328,21 @@ public class StardogWasmInstance implements Closeable {
                 "tegmentum:webfunction/sink-query-callbacks@0.1.0#scan-sink-quads",
                 HostCallbacks.sinkQueryScanQuads());
         }
+        // tegmentum:webfunction/document-sink-callbacks@0.1.0 —
+        // opaque-blob put/get/delete keyed by RDF term. MVP stub —
+        // no document-sink registry on the Stardog plugin; every
+        // dispatch returns document-sink-error `not-permitted`.
+        if (grant == null || grant.allowsInterface("document-sink-callbacks")) {
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/document-sink-callbacks@0.1.0#put-document",
+                HostCallbacks.documentSinkPutDocument());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/document-sink-callbacks@0.1.0#get-document",
+                HostCallbacks.documentSinkGetDocument());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/document-sink-callbacks@0.1.0#delete-document",
+                HostCallbacks.documentSinkDeleteDocument());
+        }
         this.instance = (ComponentInstance) cached.instantiate(
                 componentLinker.build(),
                 WebFunctionConfig.componentConfigFromSystemProperties());
