@@ -24,7 +24,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * wasm-callbacks dispatch unit tests — Phase-N5 companion to the
@@ -191,12 +190,13 @@ public class TestHostCallbacksWasmDispatch {
      * A callee whose {@code extension.register()} export does not
      * advertise the requested function name surfaces
      * {@link StardogWasmInstance.NoSuchFilterFunctionException} out of
-     * the invoker. The dispatch must map that to the closest existing
-     * wasm-call-error arm — {@code not-found} — so a guest catching the
-     * callback sees a typed result rather than a raw trap.
+     * the invoker. F4 tightening: the dispatch maps that to the
+     * dedicated {@code function-not-found} arm (was {@code not-found}
+     * pre-F4) so a guest can distinguish "no such URL" from "URL
+     * loaded but does not export that function".
      */
     @Test
-    public void invokeWasmV1_nameMismatchMapsToNotFound() {
+    public void invokeWasmV1_nameMismatchMapsToFunctionNotFound() {
         final CallbackContext ctx = CallbackContext.bind(null, dictionary);
         final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
             @Override
@@ -221,7 +221,7 @@ public class TestHostCallbacksWasmDispatch {
         final ComponentResult result = ((ComponentVal) out[0]).asResult();
         assertThat(result.isErr()).isTrue();
         final ComponentVariant err = result.getErr().orElseThrow().asVariant();
-        assertThat(err.getCaseName()).isEqualTo("not-found");
+        assertThat(err.getCaseName()).isEqualTo("function-not-found");
         assertThat(err.getPayload().orElseThrow().asString())
                 .contains("missing-fn")
                 .contains("does not export filter function");
@@ -231,10 +231,11 @@ public class TestHostCallbacksWasmDispatch {
      * Same rule applies when the callee happens to export a single
      * filter function but the caller's name doesn't match it. The
      * legacy pick-first-descriptor auto-discovery must NOT silently
-     * fall through — that's the bug we're fixing.
+     * fall through — that's the bug we're fixing. F4 variant is
+     * {@code function-not-found} (was {@code not-found} pre-F4).
      */
     @Test
-    public void invokeWasmV1_nameMismatchOnSingleFunctionCallee_stillNotFound() {
+    public void invokeWasmV1_nameMismatchOnSingleFunctionCallee_stillFunctionNotFound() {
         final CallbackContext ctx = CallbackContext.bind(null, dictionary);
         final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
             @Override
@@ -261,7 +262,7 @@ public class TestHostCallbacksWasmDispatch {
         final ComponentResult result = ((ComponentVal) out[0]).asResult();
         assertThat(result.isErr()).isTrue();
         final ComponentVariant err = result.getErr().orElseThrow().asVariant();
-        assertThat(err.getCaseName()).isEqualTo("not-found");
+        assertThat(err.getCaseName()).isEqualTo("function-not-found");
     }
 
     /**
@@ -315,12 +316,14 @@ public class TestHostCallbacksWasmDispatch {
      * pick the first — which is exactly the bug the task description
      * flagged. The strict evaluate path surfaces
      * {@link StardogWasmInstance.AmbiguousFilterFunctionException}
-     * which the dispatch maps to {@code invocation-error} (the closest
-     * existing wasm-call-error arm covering "caller omitted required
-     * disambiguator").
+     * which the dispatch maps to the dedicated
+     * {@code ambiguous-function} arm added in F4 (was
+     * {@code invocation-error} pre-F4). Guests can now respond by
+     * re-issuing with an explicit name rather than treating the
+     * failure as a callee trap.
      */
     @Test
-    public void invokeWasmV1_emptyNameMultiFunctionCallee_ambiguousInvocationError() {
+    public void invokeWasmV1_emptyNameMultiFunctionCallee_ambiguousFunction() {
         final CallbackContext ctx = CallbackContext.bind(null, dictionary);
         final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
             @Override
@@ -347,7 +350,7 @@ public class TestHostCallbacksWasmDispatch {
         final ComponentResult result = ((ComponentVal) out[0]).asResult();
         assertThat(result.isErr()).isTrue();
         final ComponentVariant err = result.getErr().orElseThrow().asVariant();
-        assertThat(err.getCaseName()).isEqualTo("invocation-error");
+        assertThat(err.getCaseName()).isEqualTo("ambiguous-function");
         assertThat(err.getPayload().orElseThrow().asString())
                 .contains("multiple filter functions")
                 .contains("caller must specify function-name");
@@ -434,8 +437,16 @@ public class TestHostCallbacksWasmDispatch {
 
     // ---- nesting-denied path ----------------------------------------
 
+    /**
+     * F4 tightening: MVP single-level nesting rule surfaces the
+     * dedicated {@code nesting-not-permitted} arm (was
+     * {@code not-permitted} pre-F4). Distinct from
+     * {@code not-permitted} (which stays for capability denial) so a
+     * guest can tell a substrate structural rule apart from a policy
+     * call.
+     */
     @Test
-    public void nestedInvokeWasmService_deniedWithNotPermitted() {
+    public void nestedInvokeWasmService_deniedWithNestingNotPermitted() {
         final CallbackContext ctx = CallbackContext.bind(null, dictionary);
         // Simulate being inside a callee's frame by bumping wasm-call depth
         // as if the outer wasm-callbacks dispatch had already entered.
@@ -463,7 +474,7 @@ public class TestHostCallbacksWasmDispatch {
             final ComponentResult result = ((ComponentVal) out[0]).asResult();
             assertThat(result.isErr()).isTrue();
             final ComponentVariant err = result.getErr().orElseThrow().asVariant();
-            assertThat(err.getCaseName()).isEqualTo("not-permitted");
+            assertThat(err.getCaseName()).isEqualTo("nesting-not-permitted");
             assertThat(err.getPayload().orElseThrow().asString())
                     .contains("nested wasm-callbacks");
         } finally {
@@ -529,12 +540,24 @@ public class TestHostCallbacksWasmDispatch {
 
     // ---- fuel-exhaustion mid-dispatch -------------------------------
 
+    /**
+     * F4 tightening: fuel exhaustion in the reflect step (invoked
+     * from the inner finally block of invokeWasmDispatchInner) maps
+     * to the dedicated {@code fuel-exhausted} arm at the WIT boundary
+     * (was propagated as {@link WfBudgetError.HostCallbackTollExhausted}
+     * pre-F4, which the outer wf:call catch surface promoted to a
+     * typed SPARQL error). A guest catching the callback now sees a
+     * typed result naming fuel as the cause; the typed
+     * {@code WfBudgetError} promotion still fires the next time the
+     * caller charges an exhausted budget.
+     */
     @Test
-    public void fuelReflectionExhaustsCallerBudget_throwsHostCallbackTollExhausted() {
+    public void fuelReflectionExhaustsCallerBudget_mapsToFuelExhausted() {
         final CallbackContext ctx = CallbackContext.bind(null, dictionary);
         // Stamp a caller ComponentInstance that exhausts on the first
         // consumeFuel call — the reflect path should catch WebAssemblyException
-        // and throw HostCallbackTollExhausted.
+        // and throw HostCallbackTollExhausted, which the F4 outer catch
+        // in invokeWasmDispatchInner maps to the fuel-exhausted arm.
         final AtomicBoolean consumeFuelCalled = new AtomicBoolean(false);
         final ai.tegmentum.webassembly4j.api.ComponentInstance callerInstance =
                 new StubComponentInstance() {
@@ -578,22 +601,69 @@ public class TestHostCallbacksWasmDispatch {
             }
         };
 
-        final Throwable thrown = catchThrowable(() -> HostCallbacks.invokeWasmDispatch(
+        final Object[] out = HostCallbacks.invokeWasmDispatch(
                 new Object[] { ComponentVal.string("ipfs://QmMock"),
                                ComponentVal.list(Collections.emptyList()) },
                 "invoke-wasm-service",
                 HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
-                mock));
-        // Fuel exhaustion in the reflect step surfaces as
-        // HostCallbackTollExhausted — same typed error path the toll
-        // exhaustion uses, so the outer wf:call catch surface promotes
-        // uniformly.
-        assertThat(thrown).isInstanceOf(WfBudgetError.HostCallbackTollExhausted.class);
+                mock);
+        // F4: the reflect-side fuel error is caught by the outer
+        // try/catch in invokeWasmDispatchInner and mapped to the
+        // fuel-exhausted arm rather than propagating out.
         assertThat(consumeFuelCalled.get()).isTrue();
+        final ComponentResult result = ((ComponentVal) out[0]).asResult();
+        assertThat(result.isErr()).isTrue();
+        final ComponentVariant err = result.getErr().orElseThrow().asVariant();
+        assertThat(err.getCaseName()).isEqualTo("fuel-exhausted");
+        assertThat(err.getPayload().orElseThrow().asString())
+                .contains("fuel budget");
         // Post-dispatch: caller's ComponentInstance is restored, wasm
         // nesting is decremented.
         assertThat(ctx.componentInstanceOrNull()).isSameAs(callerInstance);
         assertThat(ctx.wasmCallDepth()).isEqualTo(0);
+    }
+
+    /**
+     * F4 tightening: fuel exhaustion on the entry-side toll charge
+     * (before the callee is invoked) also maps to the dedicated
+     * {@code fuel-exhausted} arm rather than propagating out as a
+     * wasm trap. Complements
+     * {@link #fuelReflectionExhaustsCallerBudget_mapsToFuelExhausted}
+     * — that one exercises the reflect-side path, this one exercises
+     * the toll-charge-side path.
+     */
+    @Test
+    public void tollExhaustsCallerBudget_mapsToFuelExhausted() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        // Stamp a fuel budget of 1 with a toll of 100 so the very first
+        // wasm-callbacks.<method> toll charge exhausts the budget.
+        ctx.setFuelMeteringContext("file:///ext.wasm", 1L, 100L);
+        final AtomicBoolean invokerCalled = new AtomicBoolean(false);
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body) {
+                invokerCalled.set(true);
+                throw new IllegalStateException("should not have been called");
+            }
+        };
+        final Object[] out = HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm-service",
+                HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
+                mock);
+        // Toll exhaustion short-circuits before the invoker is reached.
+        assertThat(invokerCalled.get()).isFalse();
+        final ComponentResult result = ((ComponentVal) out[0]).asResult();
+        assertThat(result.isErr()).isTrue();
+        final ComponentVariant err = result.getErr().orElseThrow().asVariant();
+        assertThat(err.getCaseName()).isEqualTo("fuel-exhausted");
+        assertThat(err.getPayload().orElseThrow().asString())
+                .contains("fuel budget");
     }
 
     @Test
