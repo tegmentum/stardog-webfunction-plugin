@@ -62,7 +62,9 @@ import java.nio.charset.Charset;
     TestHostAllowlist.class,
     TestHostCallbacksInvokerSubject.class,
     TestHostCallbacksPhase5.class,
-    TestHostCallbacksSinkStubs.class,
+    // TestHostCallbacksSinkStubs removed in Wave B — the last stubbed
+    // family (tracker-sink-callbacks) is now real; see
+    // TestTrackerSinkCallbacks for round-trip coverage.
     TestHostCallbacksWarnOnUndeclared.class,
     TestHostCallbacksWasmDispatch.class,
     TestHttpPathAllowlist.class,

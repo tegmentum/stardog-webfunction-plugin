@@ -1785,6 +1785,24 @@ public final class HostCallbacks {
     }
 
     // ---- tegmentum:webfunction/tracker-sink-callbacks@0.1.0 ----------------
+    //
+    // Wave B — real implementations backed by the singleton
+    // {@link SqliteTrackerBackend}. Mirrors Oxigraph's
+    // SqliteTrackerSinkImpl reference shape (see
+    // ~/git/oxigraph-webfunction-plugin/crates/host-callbacks-impl/src/tracker_sink.rs).
+    //
+    // Sink names are declared at plugin startup via
+    // webfunctions.tracker.sqlite.sinks; the WIT contract has no
+    // startup-time register-sink method by design. An unknown sink
+    // surfaces the interface's no-such-sink arm. Tables inside a sink
+    // are declared at guest runtime via register-tracker-tables.
+    //
+    // Capability enforcement (perCallback) fires FIRST, before the
+    // handler dispatches — same discipline as Wave A / Wave C.
+    // executeAsInvoker is deliberately NOT wrapped because tracker-sink
+    // touches no Stardog state (SQLite file is host-owned scratch
+    // storage). Fuel toll fires after the capability gate, before the
+    // SqliteTrackerBackend call.
 
     /** {@code register-tracker-tables: func(sink-name: string,
      *  tables: list<tracker-table-schema>) -> result<_, tracker-error>}. */
@@ -1794,10 +1812,19 @@ public final class HostCallbacks {
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "tracker-sink-callbacks", "register-tracker-tables", sinkName);
             if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.register-tracker-tables");
-            return new Object[] { ComponentVal.err(trackerError("not-permitted",
-                "tracker-sink-callbacks: register-tracker-tables not supported by the Stardog "
-                + "plugin (MVP stub — no substrate-side tracker backend). Sink name requested: '"
-                + sinkName + "'.")) };
+            try {
+                final List<ComponentVal> tableList = args.length > 1 && args[1] != null
+                        ? ((ComponentVal) args[1]).asList()
+                        : java.util.Collections.emptyList();
+                final List<TrackerSchema> schemas = new ArrayList<>(tableList.size());
+                for (final ComponentVal tableVal : tableList) {
+                    schemas.add(decodeTableSchema(tableVal));
+                }
+                SqliteTrackerBackend.INSTANCE.registerTables(sinkName, schemas);
+                return new Object[] { ComponentVal.ok() };
+            } catch (SqliteTrackerBackend.TrackerError te) {
+                return new Object[] { ComponentVal.err(trackerError(te.armName(), te.getMessage())) };
+            }
         };
     }
 
@@ -1809,10 +1836,14 @@ public final class HostCallbacks {
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "tracker-sink-callbacks", "tracker-insert", sinkName);
             if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.tracker-insert");
-            return new Object[] { ComponentVal.err(trackerError("not-permitted",
-                "tracker-sink-callbacks: tracker-insert not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side tracker backend). Sink name requested: '"
-                + sinkName + "'.")) };
+            try {
+                final String tableName = args.length > 1 ? ((ComponentVal) args[1]).asString() : "";
+                final List<ComponentVal> row = decodeRowValues((ComponentVal) args[2]);
+                SqliteTrackerBackend.INSTANCE.insertRow(sinkName, tableName, row);
+                return new Object[] { ComponentVal.ok() };
+            } catch (SqliteTrackerBackend.TrackerError te) {
+                return new Object[] { ComponentVal.err(trackerError(te.armName(), te.getMessage())) };
+            }
         };
     }
 
@@ -1824,10 +1855,14 @@ public final class HostCallbacks {
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "tracker-sink-callbacks", "tracker-upsert", sinkName);
             if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.tracker-upsert");
-            return new Object[] { ComponentVal.err(trackerError("not-permitted",
-                "tracker-sink-callbacks: tracker-upsert not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side tracker backend). Sink name requested: '"
-                + sinkName + "'.")) };
+            try {
+                final String tableName = args.length > 1 ? ((ComponentVal) args[1]).asString() : "";
+                final List<ComponentVal> row = decodeRowValues((ComponentVal) args[2]);
+                SqliteTrackerBackend.INSTANCE.upsertRow(sinkName, tableName, row);
+                return new Object[] { ComponentVal.ok() };
+            } catch (SqliteTrackerBackend.TrackerError te) {
+                return new Object[] { ComponentVal.err(trackerError(te.armName(), te.getMessage())) };
+            }
         };
     }
 
@@ -1840,10 +1875,25 @@ public final class HostCallbacks {
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "tracker-sink-callbacks", "tracker-select", sinkName);
             if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.tracker-select");
-            return new Object[] { ComponentVal.err(trackerError("not-permitted",
-                "tracker-sink-callbacks: tracker-select not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side tracker backend). Sink name requested: '"
-                + sinkName + "'.")) };
+            try {
+                final String tableName = args.length > 1 ? ((ComponentVal) args[1]).asString() : "";
+                final List<TrackerWhere.Clause> where = decodeWhereList(
+                        args.length > 2 ? (ComponentVal) args[2] : null);
+                final List<String> projection = decodeStringList(
+                        args.length > 3 ? (ComponentVal) args[3] : null);
+                final List<List<ComponentVal>> rows =
+                        SqliteTrackerBackend.INSTANCE.selectRows(
+                                sinkName, tableName, where, projection);
+                final List<ComponentVal> encoded = new ArrayList<>(rows.size());
+                for (final List<ComponentVal> row : rows) {
+                    final Map<String, ComponentVal> rec = new LinkedHashMap<>();
+                    rec.put("values", ComponentVal.list(row));
+                    encoded.add(ComponentVal.record(rec));
+                }
+                return new Object[] { ComponentVal.ok(ComponentVal.list(encoded)) };
+            } catch (SqliteTrackerBackend.TrackerError te) {
+                return new Object[] { ComponentVal.err(trackerError(te.armName(), te.getMessage())) };
+            }
         };
     }
 
@@ -1855,10 +1905,18 @@ public final class HostCallbacks {
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "tracker-sink-callbacks", "tracker-delete", sinkName);
             if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.tracker-delete");
-            return new Object[] { ComponentVal.err(trackerError("not-permitted",
-                "tracker-sink-callbacks: tracker-delete not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side tracker backend). Sink name requested: '"
-                + sinkName + "'.")) };
+            try {
+                final String tableName = args.length > 1 ? ((ComponentVal) args[1]).asString() : "";
+                final List<TrackerWhere.Clause> where = decodeWhereList(
+                        args.length > 2 ? (ComponentVal) args[2] : null);
+                final long removed =
+                        SqliteTrackerBackend.INSTANCE.deleteRows(sinkName, tableName, where);
+                // WIT returns u32 — clamp defensively.
+                final long clamped = Math.min(Math.max(0L, removed), 0xFFFFFFFFL);
+                return new Object[] { ComponentVal.ok(ComponentVal.u32(clamped)) };
+            } catch (SqliteTrackerBackend.TrackerError te) {
+                return new Object[] { ComponentVal.err(trackerError(te.armName(), te.getMessage())) };
+            }
         };
     }
 
@@ -1870,15 +1928,122 @@ public final class HostCallbacks {
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "tracker-sink-callbacks", "tracker-count", sinkName);
             if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.tracker-count");
-            return new Object[] { ComponentVal.err(trackerError("not-permitted",
-                "tracker-sink-callbacks: tracker-count not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side tracker backend). Sink name requested: '"
-                + sinkName + "'.")) };
+            try {
+                final String tableName = args.length > 1 ? ((ComponentVal) args[1]).asString() : "";
+                final List<TrackerWhere.Clause> where = decodeWhereList(
+                        args.length > 2 ? (ComponentVal) args[2] : null);
+                final long n =
+                        SqliteTrackerBackend.INSTANCE.countRows(sinkName, tableName, where);
+                return new Object[] { ComponentVal.ok(ComponentVal.u64(Math.max(0L, n))) };
+            } catch (SqliteTrackerBackend.TrackerError te) {
+                return new Object[] { ComponentVal.err(trackerError(te.armName(), te.getMessage())) };
+            }
         };
     }
 
     private static ComponentVal trackerError(final String armName, final String message) {
         return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
+
+    // ---- tracker-sink decoders --------------------------------------
+
+    /** Decode a WIT {@code tracker-table-schema} record into
+     *  {@link TrackerSchema}. */
+    private static TrackerSchema decodeTableSchema(final ComponentVal tableVal) {
+        final Map<String, ComponentVal> fields = tableVal.asRecord();
+        final String name = fields.get("name").asString();
+        final List<TrackerSchema.ColumnDef> columns = new ArrayList<>();
+        for (final ComponentVal colVal : fields.get("columns").asList()) {
+            final Map<String, ComponentVal> colFields = colVal.asRecord();
+            columns.add(new TrackerSchema.ColumnDef(
+                    colFields.get("name").asString(),
+                    decodeColumnType(colFields.get("column-type")),
+                    colFields.get("primary-key").asBool(),
+                    colFields.get("nullable").asBool()));
+        }
+        final List<TrackerSchema.IndexDef> indexes = new ArrayList<>();
+        // The WIT contract has indexes on tracker-table-schema; guests
+        // that omit them (Rust wit-bindgen still emits an empty list)
+        // land here as an empty list.
+        final ComponentVal idxListVal = fields.get("indexes");
+        if (idxListVal != null) {
+            for (final ComponentVal idxVal : idxListVal.asList()) {
+                final Map<String, ComponentVal> idxFields = idxVal.asRecord();
+                final List<String> idxCols = new ArrayList<>();
+                for (final ComponentVal col : idxFields.get("columns").asList()) {
+                    idxCols.add(col.asString());
+                }
+                indexes.add(new TrackerSchema.IndexDef(
+                        idxFields.get("name").asString(),
+                        idxCols,
+                        idxFields.get("unique").asBool()));
+            }
+        }
+        return new TrackerSchema(name, columns, indexes);
+    }
+
+    /** Decode a WIT {@code column-type} enum-like variant to the Java
+     *  enum. */
+    private static TrackerSchema.ColumnType decodeColumnType(final ComponentVal v) {
+        // wit-bindgen emits enum-shaped variants as either
+        // ComponentVal.variant(caseName) (no payload) OR
+        // ComponentVal.enum_(caseName) depending on the exact WIT
+        // shape. Both surface a String case name — read via asVariant()
+        // first, fall back to asEnum() if not a variant.
+        String caseName;
+        try {
+            caseName = v.asVariant().getCaseName();
+        } catch (RuntimeException notVariant) {
+            caseName = v.asEnum();
+        }
+        switch (caseName) {
+            case "text":    return TrackerSchema.ColumnType.TEXT;
+            case "integer": return TrackerSchema.ColumnType.INTEGER;
+            case "blob":    return TrackerSchema.ColumnType.BLOB;
+            case "real":    return TrackerSchema.ColumnType.REAL;
+            default:
+                throw new SqliteTrackerBackend.TrackerError.SchemaViolation(
+                        "unknown column-type arm: '" + caseName + "'");
+        }
+    }
+
+    /** Decode a WIT {@code tracker-row} record into the ordered value
+     *  list the backend consumes. */
+    private static List<ComponentVal> decodeRowValues(final ComponentVal rowVal) {
+        if (rowVal == null) return java.util.Collections.emptyList();
+        // A tracker-row is a record with a single `values` field of
+        // list<tracker-value>; guests that ship the list bare (skipping
+        // the record wrapper) also work as a defensive fallback.
+        try {
+            final Map<String, ComponentVal> fields = rowVal.asRecord();
+            final ComponentVal valuesVal = fields.get("values");
+            if (valuesVal != null) return valuesVal.asList();
+        } catch (RuntimeException notRecord) {
+            // fall through to list-shaped fallback
+        }
+        return rowVal.asList();
+    }
+
+    /** Decode a WIT {@code list<tracker-where>} into the
+     *  {@link TrackerWhere.Clause} list the backend composes. */
+    private static List<TrackerWhere.Clause> decodeWhereList(final ComponentVal listVal) {
+        if (listVal == null) return java.util.Collections.emptyList();
+        final List<ComponentVal> items = listVal.asList();
+        final List<TrackerWhere.Clause> out = new ArrayList<>(items.size());
+        for (final ComponentVal c : items) {
+            out.add(TrackerWhere.Clause.fromWit(c));
+        }
+        return out;
+    }
+
+    /** Decode a WIT {@code list<string>} into a Java list. Nulls and
+     *  empty lists are safe. */
+    private static List<String> decodeStringList(final ComponentVal listVal) {
+        if (listVal == null) return java.util.Collections.emptyList();
+        final List<ComponentVal> items = listVal.asList();
+        final List<String> out = new ArrayList<>(items.size());
+        for (final ComponentVal s : items) out.add(s.asString());
+        return out;
     }
 
     // ---- tegmentum:webfunction/fulltext-callbacks@0.1.0 --------------------
