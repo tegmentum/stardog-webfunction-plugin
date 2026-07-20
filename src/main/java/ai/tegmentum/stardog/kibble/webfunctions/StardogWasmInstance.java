@@ -343,6 +343,31 @@ public class StardogWasmInstance implements Closeable {
                 "tegmentum:webfunction/document-sink-callbacks@0.1.0#delete-document",
                 HostCallbacks.documentSinkDeleteDocument());
         }
+        // tegmentum:webfunction/tracker-sink-callbacks@0.1.0 —
+        // extension-private scratch storage (alias maps, sweep
+        // trackers) with typed row + WHERE-clause operations. MVP
+        // stub — no tracker backend on the Stardog plugin; every
+        // dispatch returns tracker-error `not-permitted`.
+        if (grant == null || grant.allowsInterface("tracker-sink-callbacks")) {
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/tracker-sink-callbacks@0.1.0#register-tracker-tables",
+                HostCallbacks.trackerRegisterTables());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/tracker-sink-callbacks@0.1.0#tracker-insert",
+                HostCallbacks.trackerInsert());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/tracker-sink-callbacks@0.1.0#tracker-upsert",
+                HostCallbacks.trackerUpsert());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/tracker-sink-callbacks@0.1.0#tracker-select",
+                HostCallbacks.trackerSelect());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/tracker-sink-callbacks@0.1.0#tracker-delete",
+                HostCallbacks.trackerDelete());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/tracker-sink-callbacks@0.1.0#tracker-count",
+                HostCallbacks.trackerCount());
+        }
         this.instance = (ComponentInstance) cached.instantiate(
                 componentLinker.build(),
                 WebFunctionConfig.componentConfigFromSystemProperties());

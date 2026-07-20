@@ -1554,4 +1554,101 @@ public final class HostCallbacks {
     private static ComponentVal documentSinkError(final String armName, final String message) {
         return ComponentVal.variant(armName, ComponentVal.string(message));
     }
+
+    // ---- tegmentum:webfunction/tracker-sink-callbacks@0.1.0 ----------------
+
+    /** {@code register-tracker-tables: func(sink-name: string,
+     *  tables: list<tracker-table-schema>) -> result<_, tracker-error>}. */
+    public static WitHostFunction trackerRegisterTables() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "tracker-sink-callbacks", "register-tracker-tables", sinkName);
+            if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.register-tracker-tables");
+            return new Object[] { ComponentVal.err(trackerError("not-permitted",
+                "tracker-sink-callbacks: register-tracker-tables not supported by the Stardog "
+                + "plugin (MVP stub — no substrate-side tracker backend). Sink name requested: '"
+                + sinkName + "'.")) };
+        };
+    }
+
+    /** {@code tracker-insert: func(sink-name: string, table-name: string,
+     *  row: tracker-row) -> result<_, tracker-error>}. */
+    public static WitHostFunction trackerInsert() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "tracker-sink-callbacks", "tracker-insert", sinkName);
+            if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.tracker-insert");
+            return new Object[] { ComponentVal.err(trackerError("not-permitted",
+                "tracker-sink-callbacks: tracker-insert not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side tracker backend). Sink name requested: '"
+                + sinkName + "'.")) };
+        };
+    }
+
+    /** {@code tracker-upsert: func(sink-name: string, table-name: string,
+     *  row: tracker-row) -> result<_, tracker-error>}. */
+    public static WitHostFunction trackerUpsert() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "tracker-sink-callbacks", "tracker-upsert", sinkName);
+            if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.tracker-upsert");
+            return new Object[] { ComponentVal.err(trackerError("not-permitted",
+                "tracker-sink-callbacks: tracker-upsert not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side tracker backend). Sink name requested: '"
+                + sinkName + "'.")) };
+        };
+    }
+
+    /** {@code tracker-select: func(sink-name: string, table-name: string,
+     *  where-clauses: list<tracker-where>, columns: list<string>)
+     *  -> result<list<tracker-row>, tracker-error>}. */
+    public static WitHostFunction trackerSelect() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "tracker-sink-callbacks", "tracker-select", sinkName);
+            if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.tracker-select");
+            return new Object[] { ComponentVal.err(trackerError("not-permitted",
+                "tracker-sink-callbacks: tracker-select not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side tracker backend). Sink name requested: '"
+                + sinkName + "'.")) };
+        };
+    }
+
+    /** {@code tracker-delete: func(sink-name: string, table-name: string,
+     *  where-clauses: list<tracker-where>) -> result<u32, tracker-error>}. */
+    public static WitHostFunction trackerDelete() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "tracker-sink-callbacks", "tracker-delete", sinkName);
+            if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.tracker-delete");
+            return new Object[] { ComponentVal.err(trackerError("not-permitted",
+                "tracker-sink-callbacks: tracker-delete not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side tracker backend). Sink name requested: '"
+                + sinkName + "'.")) };
+        };
+    }
+
+    /** {@code tracker-count: func(sink-name: string, table-name: string,
+     *  where-clauses: list<tracker-where>) -> result<u64, tracker-error>}. */
+    public static WitHostFunction trackerCount() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "tracker-sink-callbacks", "tracker-count", sinkName);
+            if (ctx != null) ctx.chargeToll("tracker-sink-callbacks.tracker-count");
+            return new Object[] { ComponentVal.err(trackerError("not-permitted",
+                "tracker-sink-callbacks: tracker-count not supported by the Stardog plugin "
+                + "(MVP stub — no substrate-side tracker backend). Sink name requested: '"
+                + sinkName + "'.")) };
+        };
+    }
+
+    private static ComponentVal trackerError(final String armName, final String message) {
+        return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
 }
