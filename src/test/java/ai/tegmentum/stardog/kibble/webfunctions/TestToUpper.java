@@ -11,16 +11,32 @@ import java.util.Optional;
 import static com.complexible.stardog.plan.filter.functions.AbstractFunction.assertStringLiteral;
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * SPARQL-surface smoke test for wf:call against a component-mode wasm.
+ * Ports the pre-migration TestToUpper (which loaded the retired MODULE
+ * to_upper.wasm) onto the checked-in example-uppercase-extension
+ * component at src/test/resources/integration/.
+ *
+ * <p>StardogWasmInstance.componentExtensionCall auto-discovers the
+ * function name from register() and dispatches through
+ * extension.call — so the SPARQL surface {@code wf:call(str(url), arg)}
+ * still just says "run the extension at this URL against these args".
+ * The two testCall* variants that exercised wf:compose over to_upper
+ * were dropped alongside TestCompose (retired flat-ABI fixtures);
+ * this test now covers only the direct wf:call surface.
+ */
 public class TestToUpper extends AbstractStardogTest {
 
-    final String queryHeader = WebFunctionVocabulary.sparqlPrefix("wf", "0.0.0") +
-            " prefix f: <file:src/test/rust/target/wasm32-unknown-unknown/release/> ";
+    private static final String WASM =
+            "file:src/test/resources/integration/example_uppercase_extension.wasm";
+
+    final String queryHeader = WebFunctionVocabulary.sparqlPrefix("wf", "0.0.0");
 
     @Test
     public void testToUpper() {
 
         final String aQuery = queryHeader +
-                " select ?result where { bind(wf:call(str(f:to_upper.wasm), \"stardog\") AS ?result) }";
+                " select ?result where { bind(wf:call(\"" + WASM + "\", \"stardog\") AS ?result) }";
 
         try (final SelectQueryResult aResult = connection.select(aQuery).execute()) {
 
@@ -36,48 +52,10 @@ public class TestToUpper extends AbstractStardogTest {
     }
 
     @Test
-    public void testToUpperWithCall() {
-
-        final String aQuery = queryHeader +
-                " select ?result where { bind(wf:call(wf:compose(\"UCASE\", \"ENCODE_FOR_URI\"), \"star dog\") AS ?result) }";
-
-        try (final SelectQueryResult aResult = connection.select(aQuery).execute()) {
-
-            assertThat(aResult).hasNext();
-            final Optional<Value> aPossibleValue = aResult.next().value("result");
-            assertThat(aPossibleValue).isPresent();
-            final Value aValue = aPossibleValue.get();
-            assertThat(assertStringLiteral(aValue));
-            final Literal aLiteral = ((Literal)aValue);
-            assertThat(aLiteral.label()).isEqualTo("STAR%20DOG");
-            assertThat(aResult).isExhausted();
-        }
-    }
-
-    @Test
-    public void testCallXWithCompositeOfBuiltinAndWasm() {
-
-        final String aQuery = queryHeader +
-                " select ?result where { bind(wf:call(wf:compose(str(f:to_upper.wasm), \"ENCODE_FOR_URI\"), \"star dog\") AS ?result) }";
-
-        try (final SelectQueryResult aResult = connection.select(aQuery).execute()) {
-
-            assertThat(aResult).hasNext();
-            final Optional<Value> aPossibleValue = aResult.next().value("result");
-            assertThat(aPossibleValue).isPresent();
-            final Value aValue = aPossibleValue.get();
-            assertThat(assertStringLiteral(aValue));
-            final Literal aLiteral = ((Literal)aValue);
-            assertThat(aLiteral.label()).isEqualTo("STAR%20DOG");
-            assertThat(aResult).isExhausted();
-        }
-    }
-
-    @Test
     public void testLiteralUrl() {
 
         final String aQuery = queryHeader +
-                " select ?result where { bind(wf:call(\"file:src/test/rust/target/wasm32-unknown-unknown/release/to_upper.wasm\", \"stardog\") AS ?result) }";
+                " select ?result where { bind(wf:call(\"" + WASM + "\", \"stardog\") AS ?result) }";
 
         try (final SelectQueryResult aResult = connection.select(aQuery).execute()) {
 
