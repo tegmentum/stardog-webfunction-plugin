@@ -1636,53 +1636,152 @@ public final class HostCallbacks {
 
     // ---- tegmentum:webfunction/document-sink-callbacks@0.1.0 ---------------
 
-    /** {@code put-document: func(sink-name: string, doc: document)
-     *  -> result<_, document-sink-error>}. */
+    /**
+     * {@code put-document: func(sink-name: string, doc: document)
+     *  -> result<_, document-sink-error>}.
+     *
+     * <p>Upsert semantics — an existing document under the same rendered
+     * key is replaced (matches the WIT contract's "insert-or-update
+     * uniform surface" note in the interface doc). Key rendering is
+     * canonical (see {@link #renderTermKey}).
+     */
     public static WitHostFunction documentSinkPutDocument() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "document-sink-callbacks", "put-document", sinkName);
             if (ctx != null) ctx.chargeToll("document-sink-callbacks.put-document");
-            return new Object[] { ComponentVal.err(documentSinkError("not-permitted",
-                "document-sink-callbacks: put-document not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side document-sink registry). Sink name requested: '"
-                + sinkName + "'.")) };
+            final Optional<SinkEntry> entryOpt = SinkRegistry.INSTANCE.sink(sinkName);
+            if (entryOpt.isEmpty()) {
+                return new Object[] { ComponentVal.err(documentSinkError("no-such-sink",
+                    "document-sink-callbacks: no sink registered under name '"
+                    + sinkName + "'.")) };
+            }
+            if (args.length < 2 || args[1] == null) {
+                return new Object[] { ComponentVal.err(documentSinkError("backend-error",
+                    "document-sink-callbacks: put-document missing document argument for sink '"
+                    + sinkName + "'.")) };
+            }
+            final Map<String, ComponentVal> docFields = ((ComponentVal) args[1]).asRecord();
+            final ComponentVal keyTerm = docFields.get("key");
+            final String content = docFields.get("content").asString();
+            entryOpt.get().putDocument(renderTermKey(keyTerm), content);
+            return new Object[] { ComponentVal.ok() };
         };
     }
 
-    /** {@code get-document: func(sink-name: string, key: term)
-     *  -> result<document, document-sink-error>}. */
+    /**
+     * {@code get-document: func(sink-name: string, key: term)
+     *  -> result<document, document-sink-error>}.
+     *
+     * <p>Missing key surfaces as {@code no-such-document} rather than
+     * an empty-string content — a document may legitimately contain
+     * the empty string. Returns the full {@code document} record with
+     * the original key echoed back.
+     */
     public static WitHostFunction documentSinkGetDocument() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "document-sink-callbacks", "get-document", sinkName);
             if (ctx != null) ctx.chargeToll("document-sink-callbacks.get-document");
-            return new Object[] { ComponentVal.err(documentSinkError("not-permitted",
-                "document-sink-callbacks: get-document not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side document-sink registry). Sink name requested: '"
-                + sinkName + "'.")) };
+            final Optional<SinkEntry> entryOpt = SinkRegistry.INSTANCE.sink(sinkName);
+            if (entryOpt.isEmpty()) {
+                return new Object[] { ComponentVal.err(documentSinkError("no-such-sink",
+                    "document-sink-callbacks: no sink registered under name '"
+                    + sinkName + "'.")) };
+            }
+            if (args.length < 2 || args[1] == null) {
+                return new Object[] { ComponentVal.err(documentSinkError("backend-error",
+                    "document-sink-callbacks: get-document missing key argument for sink '"
+                    + sinkName + "'.")) };
+            }
+            final ComponentVal keyTerm = (ComponentVal) args[1];
+            final String rendered = renderTermKey(keyTerm);
+            final String content = entryOpt.get().getDocument(rendered);
+            if (content == null) {
+                return new Object[] { ComponentVal.err(documentSinkError("no-such-document",
+                    "document-sink-callbacks: no document under key '" + rendered
+                    + "' in sink '" + sinkName + "'.")) };
+            }
+            final Map<String, ComponentVal> docFields = new LinkedHashMap<>();
+            docFields.put("key", keyTerm);
+            docFields.put("content", ComponentVal.string(content));
+            return new Object[] { ComponentVal.ok(ComponentVal.record(docFields)) };
         };
     }
 
-    /** {@code delete-document: func(sink-name: string, key: term)
-     *  -> result<_, document-sink-error>}. */
+    /**
+     * {@code delete-document: func(sink-name: string, key: term)
+     *  -> result<_, document-sink-error>}.
+     *
+     * <p>Idempotent — missing key is NOT an error, matching the WIT
+     * doc's "wasi-blobstore delete-object convention" note. Returns
+     * {@code ok} whether or not a document was actually removed.
+     * Unknown sink still returns {@code no-such-sink} (that is a
+     * misconfig, not an idempotent-delete miss).
+     */
     public static WitHostFunction documentSinkDeleteDocument() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "document-sink-callbacks", "delete-document", sinkName);
             if (ctx != null) ctx.chargeToll("document-sink-callbacks.delete-document");
-            return new Object[] { ComponentVal.err(documentSinkError("not-permitted",
-                "document-sink-callbacks: delete-document not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side document-sink registry). Sink name requested: '"
-                + sinkName + "'.")) };
+            final Optional<SinkEntry> entryOpt = SinkRegistry.INSTANCE.sink(sinkName);
+            if (entryOpt.isEmpty()) {
+                return new Object[] { ComponentVal.err(documentSinkError("no-such-sink",
+                    "document-sink-callbacks: no sink registered under name '"
+                    + sinkName + "'.")) };
+            }
+            if (args.length < 2 || args[1] == null) {
+                return new Object[] { ComponentVal.err(documentSinkError("backend-error",
+                    "document-sink-callbacks: delete-document missing key argument for sink '"
+                    + sinkName + "'.")) };
+            }
+            entryOpt.get().removeDocument(renderTermKey((ComponentVal) args[1]));
+            return new Object[] { ComponentVal.ok() };
         };
     }
 
     private static ComponentVal documentSinkError(final String armName, final String message) {
         return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
+
+    /**
+     * Render an RDF term to the canonical string key form used by the
+     * in-memory document store. Mirrors the Oxigraph reference impl's
+     * {@code render_term_key}:
+     *
+     * <ul>
+     *   <li>{@code named-node} → raw IRI string (no {@code <...>}
+     *       wrapping — the sink key space is not RDF text).</li>
+     *   <li>{@code blank-node} → {@code _:} prefix + id.</li>
+     *   <li>{@code literal} → value only. Datatype and language are
+     *       intentionally dropped from the key: literals as document
+     *       keys are a rare "hash-content-as-key" pattern where the
+     *       lexical form IS the identity.</li>
+     *   <li>{@code triple} (RDF-star) → a fixed sentinel. Quoted-triple
+     *       document keys are out of MVP scope; matches Oxigraph.</li>
+     * </ul>
+     */
+    private static String renderTermKey(final ComponentVal term) {
+        final ComponentVariant variant = term.asVariant();
+        final String caseName = variant.getCaseName();
+        switch (caseName) {
+            case "named-node":
+                return variant.getPayload().orElseThrow().asString();
+            case "blank-node":
+                return "_:" + variant.getPayload().orElseThrow().asString();
+            case "literal": {
+                final Map<String, ComponentVal> fields =
+                        variant.getPayload().orElseThrow().asRecord();
+                return fields.get("value").asString();
+            }
+            case "triple":
+                return "<<rdf-star key placeholder>>";
+            default:
+                return "<<unknown term case: " + caseName + ">>";
+        }
     }
 
     // ---- tegmentum:webfunction/tracker-sink-callbacks@0.1.0 ----------------
