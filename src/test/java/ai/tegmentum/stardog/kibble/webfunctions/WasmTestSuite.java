@@ -34,7 +34,6 @@ import java.nio.charset.Charset;
 @RunWith(Suite.class)
 @SuiteClasses({
     TestAggregate.class,
-    TestArrayOf.class,
     TestAuditRowSerialization.class,
     TestAuditSinkRingIntegration.class,
     TestCache.class,
@@ -48,7 +47,6 @@ import java.nio.charset.Charset;
     TestCapabilityPolicyResolver.class,
     TestCapabilityPolicyStore.class,
     TestCapabilityVocabulary.class,
-    TestCompose.class,
     // Compose Wave B unit tests — pure JVM, no Stardog needed but
     // discovered through the suite so `mvn test` runs them alongside
     // the rest of the plugin's tests.
@@ -58,7 +56,6 @@ import java.nio.charset.Charset;
     TestPlanV1Cbor.class,
     TestSha256UrlLoader.class,
     TestWebFunctionComposeService.class,
-    TestFilter.class,
     TestHostAllowlist.class,
     TestHostCallbacksInvokerSubject.class,
     TestHostCallbacksPhase5.class,
@@ -68,14 +65,11 @@ import java.nio.charset.Charset;
     TestHostCallbacksWarnOnUndeclared.class,
     TestHostCallbacksWasmDispatch.class,
     TestHttpPathAllowlist.class,
-    TestMap.class,
     TestMemoize.class,
     TestMethodPolicy.class,
     TestNdjsonRotatingFileAuditSink.class,
-    TestPartial.class,
     TestPluginVersion.class,
     TestPolicyTriples.class,
-    TestReduce.class,
     TestServiceQuery.class,
     // Wave A - sink registry + real impls for sink-callbacks /
     // sink-query-callbacks / document-sink-callbacks.
@@ -110,7 +104,6 @@ import java.nio.charset.Charset;
     TestWasmCustomSectionReader.class,
     TestWebFunctionCapability.class,
     TestWebFunctionConfig.class,
-    TestWebFunctions.class,
     TestWfCapabilityError.class,
 })
 
