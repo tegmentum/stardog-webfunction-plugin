@@ -16,7 +16,6 @@ import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.FixMethodOrder;
-import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runners.MethodSorters;
 import org.testcontainers.containers.Container;
@@ -157,43 +156,17 @@ public class CapabilityAskIT {
             "http://semantalytics.com/2021/03/ns/stardog/webfunction/latest/";
 
     // ---- I4 --------------------------------------------------------------
-
-    /**
-     * I4 — grant + invoker-subject GRAPH ACL enforcement.
-     *
-     * <p>The scenario needs two Stardog users (Alice with read on
-     * graph G1, Bob without), each with the Shiro
-     * {@code web-function-callback:invoke:graph-callbacks/*}
-     * permission but not overlapping GRAPH ACLs, then a query
-     * invoked as each user asserting that the extension's
-     * execute-query dispatch reads with the invoker's ACLs.
-     *
-     * <p>Disabled for this landing: the multi-user + role-permission
-     * + GRAPH ACL setup wants a full admin-API integration harness
-     * that this integration suite doesn't yet carry, and the
-     * invoker-subject wrap plumbing itself is already covered at
-     * the unit level by {@code TestHostCallbacksInvokerSubject}
-     * (host-side ShiroUtils.executeAs) plus
-     * {@code TestCapabilityEnforcer} (grant→dispatch happy path).
-     *
-     * <p>TODO(post-MVP): land a multi-user helper on top of
-     * {@code CapabilityPolicyDbHelpers} that provisions users,
-     * roles, and per-graph read permissions, then wire this test.
-     */
-    @Test
-    @Ignore("I4 — multi-user + role-permission + GRAPH ACL setup pending; "
-            + "unit tests TestHostCallbacksInvokerSubject + TestCapabilityEnforcer "
-            + "cover the invoker-subject dispatch plumbing.")
-    public void i4_grantExecutesUnderInvokerSubject() {
-        // Skeleton preserved so a follow-up patch has a concrete
-        // wire-up target — grant graph-callbacks + execute-query to
-        // both users; run wf:call as Alice against a graph she can
-        // read; run same wf:call as Bob against the same graph;
-        // assert Alice sees data, Bob sees empty/denied; assert
-        // the capability attribution ring (via /audit-capability.log)
-        // carries rows for both invocations with the correct
-        // Shiro principal.
-    }
+    //
+    // I4 — grant + invoker-subject GRAPH ACL enforcement — moved to
+    // its own IT class, {@link CapabilityInvokerSubjectIT}. That
+    // scenario needs a container config incompatible with this class's
+    // shared shape (per-DB security.named.graphs=true on a fresh test
+    // DB, plus a Stardog-user provisioning phase that seeds Alice/Bob
+    // and their asymmetric named-graph reads via StardogUserProvisioner);
+    // keeping it in-class would force the I5..I8 tests to opt out of
+    // named-graph security or re-provision users on every @Before.
+    // The extracted IT preserves the audit-ring principal assertion
+    // this stub described.
 
     // ---- I5 --------------------------------------------------------------
 
