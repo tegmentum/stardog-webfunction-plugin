@@ -77,6 +77,12 @@ import java.nio.charset.Charset;
     TestPolicyTriples.class,
     TestReduce.class,
     TestServiceQuery.class,
+    // Wave A - sink registry + real impls for sink-callbacks /
+    // sink-query-callbacks / document-sink-callbacks.
+    TestSinkRegistry.class,
+    TestSinkCallbacks.class,
+    TestSinkQueryCallbacks.class,
+    TestDocumentSinkCallbacks.class,
     TestToUpper.class,
     TestWasmCalleeAllowlist.class,
     TestWasmCustomSectionReader.class,
