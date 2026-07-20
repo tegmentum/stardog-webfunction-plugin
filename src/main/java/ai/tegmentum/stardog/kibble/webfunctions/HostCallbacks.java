@@ -1402,37 +1402,51 @@ public final class HostCallbacks {
     // ---- tegmentum:webfunction/sink-callbacks@0.1.0 -------------------------
     //
     // Sink interfaces (sink-callbacks / sink-query-callbacks /
-    // document-sink-callbacks / tracker-sink-callbacks) are Tegmentum-
-    // substrate constructs for polyglot demotion (typed RDF quads
-    // demoted into SQLite / DuckDB / SirixDB / vector-index rows). The
-    // Stardog plugin does not carry a sink registry — sinks are a
-    // substrate-neutral concept the Oxigraph reference impl owns; there
-    // is no Stardog-side analog to wire against. MVP: register the
-    // WIT surface so guests importing the interface link successfully;
-    // every host function returns the interface's `not-permitted` arm
-    // with a descriptive message. Same pattern as
-    // {@link #invokeWasmService}'s pre-composition MVP.
+    // document-sink-callbacks) are Tegmentum-substrate constructs for
+    // polyglot demotion (typed RDF quads demoted into SQLite / DuckDB /
+    // SirixDB / vector-index rows). Wave A wires an in-memory
+    // {@link SinkRegistry} — sinks are registered at plugin startup
+    // from the {@code webfunctions.sink.names} config key and every
+    // handler routes through the registry. Unknown sink name surfaces
+    // as the interface's {@code no-such-sink} arm; a registered sink
+    // accepts quads / documents into an in-memory {@link SinkEntry}.
     //
     // Capability enforcement (perCallback) fires FIRST, before the
-    // MVP not-permitted stub returns — so a policy that denies the
-    // interface surfaces the standard {@link WfCapabilityError.PerCallDenied}
-    // rather than the WIT-boundary not-permitted arm. Both paths result
-    // in a typed denial the guest can distinguish.
+    // handler dispatches — so a policy that denies the interface
+    // surfaces {@link WfCapabilityError.PerCallDenied} rather than any
+    // WIT-boundary error variant. Both paths result in a typed denial
+    // the guest can distinguish.
     //
-    // Stubs do NOT wrap in {@link #executeAsInvoker} because they touch
-    // no Stardog state — the Phase 4 Shiro invoker-subject wrap has no
-    // effect for a pure not-permitted return. When a full-impl lands
-    // that queries Stardog for a real sink registry, the wrap will be
-    // added at that point.
+    // Handlers do NOT wrap in {@link #executeAsInvoker} because sinks
+    // touch no Stardog state — the Phase 4 Shiro invoker-subject wrap
+    // is meaningful only for graph-callbacks that read/write Stardog's
+    // real store. A production sink backend that DID hit Stardog (a
+    // future "Stardog-graph sink adapter") would add the wrap at that
+    // point.
+    //
+    // Tracker-sink-callbacks + fulltext-callbacks remain as stubs
+    // (Waves B / C).
 
-    /** {@code list-sinks: func() -> list<sink-descriptor>}. Empty list
-     *  under MVP — no sinks registered on the Stardog plugin. */
+    /** {@code list-sinks: func() -> list<sink-descriptor>}. Returns one
+     *  descriptor per name registered in the {@link SinkRegistry}. The
+     *  {@code graph-pattern} field is intentionally empty at Wave A —
+     *  the reference in-memory sink accepts any quad without shape
+     *  validation, matching the memo §4 note that {@code graph-pattern}
+     *  stays a human-readable string until the shape ADT lands. */
     public static WitHostFunction sinkListSinks() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
             enforceCapability(ctx, "sink-callbacks", "list-sinks", "");
             if (ctx != null) ctx.chargeToll("sink-callbacks.list-sinks");
-            return new Object[] { ComponentVal.list(new ArrayList<>()) };
+            final List<String> names = SinkRegistry.INSTANCE.sinkNames();
+            final List<ComponentVal> descriptors = new ArrayList<>(names.size());
+            for (final String name : names) {
+                final Map<String, ComponentVal> fields = new LinkedHashMap<>();
+                fields.put("name", ComponentVal.string(name));
+                fields.put("graph-pattern", ComponentVal.string(""));
+                descriptors.add(ComponentVal.record(fields));
+            }
+            return new Object[] { ComponentVal.list(descriptors) };
         };
     }
 
@@ -1443,11 +1457,19 @@ public final class HostCallbacks {
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "sink-callbacks", "emit-quad", sinkName);
             if (ctx != null) ctx.chargeToll("sink-callbacks.emit-quad");
-            return new Object[] { ComponentVal.err(sinkError("not-permitted",
-                "sink-callbacks: emit-quad not supported by the Stardog plugin (MVP stub — no "
-                + "substrate-side sink registry). Guests should either target the Oxigraph "
-                + "reference impl or wait for the follow-on wave that lands a Stardog-side "
-                + "sink adapter. Sink name requested: '" + sinkName + "'.")) };
+            final Optional<SinkEntry> entryOpt = SinkRegistry.INSTANCE.sink(sinkName);
+            if (entryOpt.isEmpty()) {
+                return new Object[] { ComponentVal.err(sinkError("no-such-sink",
+                    "sink-callbacks: no sink registered under name '" + sinkName + "' — "
+                    + "declare it in " + WebFunctionConfig.PROP_SINK_NAMES + " at boot.")) };
+            }
+            if (args.length < 2 || args[1] == null) {
+                return new Object[] { ComponentVal.err(sinkError("backend-error",
+                    "sink-callbacks: emit-quad missing quad argument for sink '"
+                    + sinkName + "'.")) };
+            }
+            entryOpt.get().addQuad((ComponentVal) args[1]);
+            return new Object[] { ComponentVal.ok() };
         };
     }
 
@@ -1458,9 +1480,17 @@ public final class HostCallbacks {
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "sink-callbacks", "emit-quads", sinkName);
             if (ctx != null) ctx.chargeToll("sink-callbacks.emit-quads");
-            return new Object[] { ComponentVal.err(sinkError("not-permitted",
-                "sink-callbacks: emit-quads not supported by the Stardog plugin (MVP stub — no "
-                + "substrate-side sink registry). Sink name requested: '" + sinkName + "'.")) };
+            final Optional<SinkEntry> entryOpt = SinkRegistry.INSTANCE.sink(sinkName);
+            if (entryOpt.isEmpty()) {
+                return new Object[] { ComponentVal.err(sinkError("no-such-sink",
+                    "sink-callbacks: no sink registered under name '" + sinkName + "' — "
+                    + "declare it in " + WebFunctionConfig.PROP_SINK_NAMES + " at boot.")) };
+            }
+            final List<ComponentVal> batch = args.length > 1 && args[1] != null
+                    ? ((ComponentVal) args[1]).asList()
+                    : java.util.Collections.emptyList();
+            final int added = entryOpt.get().addQuads(batch);
+            return new Object[] { ComponentVal.ok(ComponentVal.u32((long) added)) };
         };
     }
 
