@@ -69,8 +69,6 @@ import java.nio.charset.Charset;
     TestHostCallbacksWasmDispatch.class,
     TestHttpPathAllowlist.class,
     TestMap.class,
-    TestMappingDictionaryGet.class,
-    TestMappingDictionaryAdd.class,
     TestMemoize.class,
     TestMethodPolicy.class,
     TestNdjsonRotatingFileAuditSink.class,
@@ -111,6 +109,7 @@ import java.nio.charset.Charset;
     TestWasmCalleeAllowlist.class,
     TestWasmCustomSectionReader.class,
     TestWebFunctionCapability.class,
+    TestWebFunctionConfig.class,
     TestWebFunctions.class,
     TestWfCapabilityError.class,
 })
