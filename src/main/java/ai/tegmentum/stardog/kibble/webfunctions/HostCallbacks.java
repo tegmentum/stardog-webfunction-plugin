@@ -1398,4 +1398,73 @@ public final class HostCallbacks {
         }
         throw new IllegalArgumentException("wf: unsupported Value kind: " + v);
     }
+
+    // ---- tegmentum:webfunction/sink-callbacks@0.1.0 -------------------------
+    //
+    // Sink interfaces (sink-callbacks / sink-query-callbacks /
+    // document-sink-callbacks / tracker-sink-callbacks) are Tegmentum-
+    // substrate constructs for polyglot demotion (typed RDF quads
+    // demoted into SQLite / DuckDB / SirixDB / vector-index rows). The
+    // Stardog plugin does not carry a sink registry — sinks are a
+    // substrate-neutral concept the Oxigraph reference impl owns; there
+    // is no Stardog-side analog to wire against. MVP: register the
+    // WIT surface so guests importing the interface link successfully;
+    // every host function returns the interface's `not-permitted` arm
+    // with a descriptive message. Same pattern as
+    // {@link #invokeWasmService}'s pre-composition MVP.
+    //
+    // Capability enforcement (perCallback) fires FIRST, before the
+    // MVP not-permitted stub returns — so a policy that denies the
+    // interface surfaces the standard {@link WfCapabilityError.PerCallDenied}
+    // rather than the WIT-boundary not-permitted arm. Both paths result
+    // in a typed denial the guest can distinguish.
+    //
+    // Stubs do NOT wrap in {@link #executeAsInvoker} because they touch
+    // no Stardog state — the Phase 4 Shiro invoker-subject wrap has no
+    // effect for a pure not-permitted return. When a full-impl lands
+    // that queries Stardog for a real sink registry, the wrap will be
+    // added at that point.
+
+    /** {@code list-sinks: func() -> list<sink-descriptor>}. Empty list
+     *  under MVP — no sinks registered on the Stardog plugin. */
+    public static WitHostFunction sinkListSinks() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            enforceCapability(ctx, "sink-callbacks", "list-sinks", "");
+            if (ctx != null) ctx.chargeToll("sink-callbacks.list-sinks");
+            return new Object[] { ComponentVal.list(new ArrayList<>()) };
+        };
+    }
+
+    /** {@code emit-quad: func(sink-name: string, q: quad) -> result<_, sink-error>}. */
+    public static WitHostFunction sinkEmitQuad() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "sink-callbacks", "emit-quad", sinkName);
+            if (ctx != null) ctx.chargeToll("sink-callbacks.emit-quad");
+            return new Object[] { ComponentVal.err(sinkError("not-permitted",
+                "sink-callbacks: emit-quad not supported by the Stardog plugin (MVP stub — no "
+                + "substrate-side sink registry). Guests should either target the Oxigraph "
+                + "reference impl or wait for the follow-on wave that lands a Stardog-side "
+                + "sink adapter. Sink name requested: '" + sinkName + "'.")) };
+        };
+    }
+
+    /** {@code emit-quads: func(sink-name: string, quads: list<quad>) -> result<u32, sink-error>}. */
+    public static WitHostFunction sinkEmitQuads() {
+        return args -> {
+            final CallbackContext ctx = CallbackContext.current();
+            final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
+            enforceCapability(ctx, "sink-callbacks", "emit-quads", sinkName);
+            if (ctx != null) ctx.chargeToll("sink-callbacks.emit-quads");
+            return new Object[] { ComponentVal.err(sinkError("not-permitted",
+                "sink-callbacks: emit-quads not supported by the Stardog plugin (MVP stub — no "
+                + "substrate-side sink registry). Sink name requested: '" + sinkName + "'.")) };
+        };
+    }
+
+    private static ComponentVal sinkError(final String armName, final String message) {
+        return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
 }

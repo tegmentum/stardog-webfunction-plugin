@@ -296,6 +296,26 @@ public class StardogWasmInstance implements Closeable {
                 "tegmentum:webfunction/wasm-callbacks@0.1.0#invoke-wasm-service",
                 HostCallbacks.invokeWasmService());
         }
+        // tegmentum:webfunction/sink-callbacks@0.1.0 —
+        // typed-quad write half of polyglot demotion. Registered as
+        // MVP stubs — every host function returns the sink-error
+        // `not-permitted` arm because the Stardog plugin does not
+        // ship a substrate-side sink registry. Guests importing the
+        // interface still link; a policy that denies the interface
+        // keeps it unregistered so guests fail to link at load time.
+        // Full wiring is future work; the shape is stable per
+        // Phase 1b's invokeWasmService pattern.
+        if (grant == null || grant.allowsInterface("sink-callbacks")) {
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/sink-callbacks@0.1.0#list-sinks",
+                HostCallbacks.sinkListSinks());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/sink-callbacks@0.1.0#emit-quad",
+                HostCallbacks.sinkEmitQuad());
+            componentLinker.addWitHostFunction(
+                "tegmentum:webfunction/sink-callbacks@0.1.0#emit-quads",
+                HostCallbacks.sinkEmitQuads());
+        }
         this.instance = (ComponentInstance) cached.instantiate(
                 componentLinker.build(),
                 WebFunctionConfig.componentConfigFromSystemProperties());
