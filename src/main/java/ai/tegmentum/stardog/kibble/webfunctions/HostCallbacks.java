@@ -887,12 +887,10 @@ public final class HostCallbacks {
      *
      * <p>Single-level nesting rule: rejects a call when the current
      * frame is already inside a wasm-callbacks dispatch
-     * ({@link CallbackContext#wasmCallDepth} {@code >= 1}) with a
-     * {@code not-permitted} arm — the closest existing wasm-call-error
-     * variant per host-callbacks.wit ({@code not-found} /
-     * {@code invocation-error} / {@code not-permitted}); an explicit
-     * {@code nesting-not-permitted} arm would need a WIT change and
-     * host-callbacks.wit is out of scope for this task.
+     * ({@link CallbackContext#wasmCallDepth} {@code >= 1}) with the
+     * F4 {@code nesting-not-permitted} arm — distinct from
+     * {@code not-permitted} (capability denial) so guests can tell a
+     * substrate structural rule apart from a policy call.
      */
     public static WitHostFunction invokeWasmService() {
         return args -> invokeWasmDispatch(
@@ -992,8 +990,9 @@ public final class HostCallbacks {
      *       for the real dispatch path; the tests drive this method directly
      *       and rely on the checks here to fire.</li>
      *   <li>Nesting-depth guard — {@code ctx.wasmCallDepth() >= 1} means the
-     *       caller is a callee itself; MVP rejects. Uses the {@code not-permitted}
-     *       arm since host-callbacks.wit lacks a nesting-specific variant.</li>
+     *       caller is a callee itself; MVP rejects. Uses the F4
+     *       {@code nesting-not-permitted} arm — distinct from
+     *       {@code not-permitted} (which stays for capability denial).</li>
      *   <li>Load callee + marshal args → invoke {@code evaluate} →
      *       encode result. Errors are mapped to the closest existing
      *       wasm-call-error arm.</li>
@@ -1048,9 +1047,18 @@ public final class HostCallbacks {
             try {
                 ctx.chargeToll("wasm-callbacks." + method);
             } catch (WfBudgetError.HostCallbackTollExhausted exhausted) {
-                // Preserve the fuel-error unwind path — the outer catch
-                // in Call.evaluate / WebFunctionServiceOperator promotes it.
-                throw exhausted;
+                // F4 tightening: fuel exhaustion on the entry-side toll
+                // charge → dedicated `fuel-exhausted` arm rather than
+                // propagating out as a wasm trap (pre-F4 behavior) or
+                // shoehorning into `invocation-error`. A guest catching
+                // the callback now sees a typed result naming the fuel
+                // budget as the cause; the wf:call-level typed
+                // WfBudgetError promotion still fires the next time the
+                // caller charges an exhausted budget.
+                return new Object[] { ComponentVal.err(wasmCallError("fuel-exhausted",
+                    method + ": host-callback toll exceeded caller's fuel budget: "
+                    + (exhausted.getMessage() == null
+                            ? exhausted.toString() : exhausted.getMessage()))) };
             }
         }
         if (ctx == null) {
@@ -1064,13 +1072,15 @@ public final class HostCallbacks {
                 + "CallbackContext — bind with bind(dictionary) at the top of the "
                 + "wf:call frame")) };
         }
-        // Nesting-depth guard — MVP single-level rule.
+        // Nesting-depth guard — MVP single-level rule. F4 tightening:
+        // maps to the dedicated `nesting-not-permitted` arm rather than
+        // the generic `not-permitted` (which stays reserved for
+        // capability denial). Guests can now discriminate a substrate
+        // structural rule from a policy call.
         if (ctx.wasmCallDepth() >= 1) {
-            return new Object[] { ComponentVal.err(wasmCallError("not-permitted",
+            return new Object[] { ComponentVal.err(wasmCallError("nesting-not-permitted",
                 method + ": nested wasm-callbacks invocation not permitted — "
-                + "single-level nesting only (MVP; full recursion is future work). "
-                + "Closest existing wasm-call-error variant is not-permitted; "
-                + "host-callbacks.wit lacks a nesting-specific arm.")) };
+                + "single-level nesting only (MVP; full recursion is future work).")) };
         }
         return executeAsInvoker(ctx, "wasm-callbacks", method, url, () ->
             invokeWasmDispatchInner(ctx, url, functionNameOrNull, argsListVal, returnShape, invoker));
@@ -1100,14 +1110,21 @@ public final class HostCallbacks {
         final ai.tegmentum.webassembly4j.api.ComponentInstance callerInstance =
                 ctx.componentInstanceOrNull();
         ctx.enterWasmCall();
+        // Outer try/catch pairs with the reflect-fuel path — the finally
+        // block calls reflectCalleeFuelAndRestoreCaller, which may throw
+        // WfBudgetError.HostCallbackTollExhausted when the reflected
+        // callee fuel usage overruns the caller's budget. That throw
+        // supersedes the try/catch below, so the F4 map to the
+        // `fuel-exhausted` arm has to happen here.
+        try {
         try {
             // function-name is threaded through to the callee dispatch:
             //   * non-null / non-empty → strict lookup against the
             //     callee's registered surface (NoSuchFilterFunctionException
-            //     → not-found).
+            //     → function-not-found).
             //   * null / empty         → single-function callees still
             //     auto-discover; multi-function callees surface
-            //     AmbiguousFilterFunctionException → invocation-error
+            //     AmbiguousFilterFunctionException → ambiguous-function
             //     because the choice cannot be inferred.
             return invoker.invoke(url, ctx.dictionary(), functionNameOrNull, callArgs, rs -> {
                 if (returnShape == CalleeReturnShape.SINGLE_TERM) {
@@ -1119,15 +1136,21 @@ public final class HostCallbacks {
                 }
             });
         } catch (StardogWasmInstance.NoSuchFilterFunctionException nsfe) {
-            // Explicit function-name did not match any registered filter
-            // — closest existing wasm-call-error arm is not-found.
-            return new Object[] { ComponentVal.err(wasmCallError("not-found",
+            // F4 tightening: explicit function-name did not match any
+            // registered filter → dedicated `function-not-found` arm
+            // (was `not-found` pre-F4). `not-found` stays reserved for
+            // callee URL that did not resolve to a component; the split
+            // lets guests tell "no such URL" apart from "URL loaded but
+            // does not export that function".
+            return new Object[] { ComponentVal.err(wasmCallError("function-not-found",
                 "invoke-wasm: " + nsfe.getMessage())) };
         } catch (StardogWasmInstance.AmbiguousFilterFunctionException ambig) {
-            // Caller omitted function-name but callee exports more than
-            // one filter function — invocation-error covers "caller did
-            // not supply the argument needed to disambiguate".
-            return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
+            // F4 tightening: caller omitted function-name but callee
+            // exports more than one filter function → dedicated
+            // `ambiguous-function` arm (was `invocation-error` pre-F4).
+            // Guests can now respond by re-issuing with an explicit
+            // name rather than treating the failure as a callee trap.
+            return new Object[] { ComponentVal.err(wasmCallError("ambiguous-function",
                 "invoke-wasm: " + ambig.getMessage())) };
         } catch (java.net.MalformedURLException mue) {
             return new Object[] { ComponentVal.err(wasmCallError("not-found",
@@ -1143,11 +1166,19 @@ public final class HostCallbacks {
                 "invoke-wasm: load denied for '" + url + "': "
                 + (se.getMessage() == null ? se.toString() : se.getMessage()))) };
         } catch (WfBudgetError.HostCallbackTollExhausted fuelExhausted) {
-            // Reflection fuel-exhaustion (from reflectCalleeFuel...) —
-            // let it propagate so the outer wf:call catch surface promotes
-            // to a typed WfBudgetError. finally still runs to restore
-            // caller's ComponentInstance.
-            throw fuelExhausted;
+            // F4 tightening: reflection fuel-exhaustion (from
+            // reflectCalleeFuel...) → dedicated `fuel-exhausted` arm.
+            // Pre-F4 this rethrew so the outer wf:call catch surface
+            // promoted to a typed WfBudgetError; F4 maps at the WIT
+            // boundary so a guest catching the callback receives a
+            // typed result naming fuel as the cause. finally still runs
+            // to restore caller's ComponentInstance. The typed
+            // WfBudgetError promotion still fires the next time the
+            // caller charges an exhausted budget.
+            return new Object[] { ComponentVal.err(wasmCallError("fuel-exhausted",
+                "invoke-wasm: callee dispatch exhausted caller's fuel budget: "
+                + (fuelExhausted.getMessage() == null
+                        ? fuelExhausted.toString() : fuelExhausted.getMessage()))) };
         } catch (java.io.IOException ioe) {
             return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
                 "invoke-wasm: callee trap: "
@@ -1169,6 +1200,21 @@ public final class HostCallbacks {
             // fuel consumption back into the caller's budget (Phase-N4).
             reflectCalleeFuelAndRestoreCaller(ctx, callerInstance);
             ctx.exitWasmCall();
+        }
+        } catch (WfBudgetError.HostCallbackTollExhausted fuelExhausted) {
+            // F4 tightening: the reflect step (invoked from the inner
+            // finally block) threw HostCallbackTollExhausted because
+            // the callee's fuel usage overran the caller's budget.
+            // Pre-F4 this propagated out and the outer wf:call catch
+            // surface promoted it to a typed WfBudgetError; F4 maps at
+            // the WIT boundary so a guest catching the callback
+            // receives a typed result naming fuel as the cause. The
+            // typed WfBudgetError promotion still fires the next time
+            // the caller charges an exhausted budget.
+            return new Object[] { ComponentVal.err(wasmCallError("fuel-exhausted",
+                "invoke-wasm: callee dispatch exhausted caller's fuel budget: "
+                + (fuelExhausted.getMessage() == null
+                        ? fuelExhausted.toString() : fuelExhausted.getMessage()))) };
         }
     }
 
