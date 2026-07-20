@@ -1,5 +1,6 @@
 package ai.tegmentum.stardog.kibble.webfunctions.compose;
 
+import ai.tegmentum.stardog.kibble.webfunctions.WebFunctionConfig;
 import com.complexible.stardog.Kernel;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
@@ -7,6 +8,8 @@ import com.google.inject.Singleton;
 import java.io.IOException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 
 /**
  * Admin-callable entry point for the compose orchestrator.
@@ -38,6 +41,14 @@ public final class ComposeAdmin {
     private final ComposeOrchestratorClient client;
     private final ComposedArtifactStore artifactStore;
     private final ComposePolicyStoreWriter policyStoreWriter;
+    private final Supplier<Optional<String>> artifactUrlPrefixSupplier;
+    // Indirection between {@link #composeFromCbor} and the policy-store
+    // write side. In production this is {@code policyStoreWriter::write};
+    // tests supply a no-op or a recorder so they can drive the compose
+    // flow without a live Kernel. Kept as a {@link BiConsumer} rather
+    // than a bespoke functional interface to avoid adding a new type
+    // to the public surface for a purely internal seam.
+    private final BiConsumer<byte[], String> writeSink;
 
     /**
      * Result of a single admin composition — carries the artifact URL
@@ -62,11 +73,14 @@ public final class ComposeAdmin {
         }
 
         /**
-         * Canonical composed-artifact URL — {@code sha256://<hex>} by
+         * RDF-facing composed-artifact URL — {@code sha256://<hex>} by
          * default (the plugin's in-tree content-addressed blob store).
-         * If the operator re-hosts the artifact elsewhere they can
-         * publish a different URL scheme, but the store always mints
-         * one under {@code sha256://}.
+         * When {@link WebFunctionConfig#PROP_COMPOSE_ARTIFACT_URL_PREFIX}
+         * is set, the returned URL is {@code <prefix><hex>} instead —
+         * so operators can point the composition RDF at an off-plugin
+         * CDN or object store. The plugin still persists composed bytes
+         * to its local blob store regardless of this setting; making
+         * the emitted URL fetchable is the operator's responsibility.
          */
         public String artifactUrl() { return artifactUrl; }
 
@@ -112,12 +126,19 @@ public final class ComposeAdmin {
     // Private "already-materialized" constructor — for use by both the
     // defaults path and by tests that hand-wire dependencies.
     private ComposeAdmin(final ComposeAdmin instance) {
-        this(instance.client, instance.artifactStore, instance.policyStoreWriter);
+        this.client = instance.client;
+        this.artifactStore = instance.artifactStore;
+        this.policyStoreWriter = instance.policyStoreWriter;
+        this.artifactUrlPrefixSupplier = instance.artifactUrlPrefixSupplier;
+        this.writeSink = instance.writeSink;
     }
 
     /**
      * Explicit-dependency constructor for hand-wired callers (tests,
-     * scripts that construct their own orchestrator + writer).
+     * scripts that construct their own orchestrator + writer). Reads
+     * the RDF-facing artifact URL prefix from
+     * {@link WebFunctionConfig#getArtifactUrlPrefix()} — same shape the
+     * Guice constructor uses in production.
      */
     public ComposeAdmin(final ComposeOrchestratorClient client,
                         final ComposedArtifactStore artifactStore,
@@ -125,6 +146,32 @@ public final class ComposeAdmin {
         this.client = Objects.requireNonNull(client, "client");
         this.artifactStore = Objects.requireNonNull(artifactStore, "artifactStore");
         this.policyStoreWriter = Objects.requireNonNull(policyStoreWriter, "policyStoreWriter");
+        this.artifactUrlPrefixSupplier = WebFunctionConfig::getArtifactUrlPrefix;
+        this.writeSink = policyStoreWriter::write;
+    }
+
+    /**
+     * Test-only constructor that pins the RDF-facing artifact URL
+     * prefix through {@code artifactUrlPrefixSupplier} and redirects the
+     * policy-store write side through {@code writeSink} — so unit tests
+     * can drive the full compose flow without a live Kernel. Production
+     * callers should use
+     * {@link #ComposeAdmin(ComposeOrchestratorClient, ComposedArtifactStore,
+     * ComposePolicyStoreWriter)}, which routes through
+     * {@link WebFunctionConfig#getArtifactUrlPrefix()} and
+     * {@link ComposePolicyStoreWriter#write}.
+     */
+    ComposeAdmin(final ComposeOrchestratorClient client,
+                 final ComposedArtifactStore artifactStore,
+                 final ComposePolicyStoreWriter policyStoreWriter,
+                 final Supplier<Optional<String>> artifactUrlPrefixSupplier,
+                 final BiConsumer<byte[], String> writeSink) {
+        this.client = Objects.requireNonNull(client, "client");
+        this.artifactStore = Objects.requireNonNull(artifactStore, "artifactStore");
+        this.policyStoreWriter = policyStoreWriter; // nullable — tests may skip the writer wiring
+        this.artifactUrlPrefixSupplier = Objects.requireNonNull(
+                artifactUrlPrefixSupplier, "artifactUrlPrefixSupplier");
+        this.writeSink = Objects.requireNonNull(writeSink, "writeSink");
     }
 
     /**
@@ -181,13 +228,24 @@ public final class ComposeAdmin {
     public ComposedResult composeFromCbor(final byte[] planCbor, final String planIri) {
         Objects.requireNonNull(planCbor, "planCbor");
         final byte[] composed = client.composeFromCbor(planCbor);
-        final String artifactUrl;
+        // Persist to the local blob store first — the plugin owns
+        // {@code sha256://<hex>} loads regardless of what URL surfaces
+        // in the emitted RDF, so the store side is unaffected by the
+        // operator-facing prefix override.
         try {
-            artifactUrl = artifactStore.persist(composed);
+            artifactStore.persist(composed);
         } catch (IOException ioe) {
             throw new ComposeException(null, "artifact store persist failed: " + ioe.getMessage(), ioe);
         }
         final String digestHex = ComposedArtifactStore.hexDigestFor(composed);
+        // Choose the RDF-facing artifact URL: when the operator sets
+        // {@code webfunctions.compose.artifact-url-prefix}, emit
+        // {@code <prefix><hex>} — otherwise default to the canonical
+        // {@code sha256://<hex>} form the local blob store mints.
+        // Persistence path is unchanged in either case.
+        final String artifactUrl = artifactUrlPrefixSupplier.get()
+                .map(prefix -> prefix + digestHex)
+                .orElse("sha256://" + digestHex);
         final String effectivePlanIri = planIri == null ? "urn:composition:plan" : planIri;
         // Emit hasArtifact + compositionDigest triples so the composition
         // RDF is joinable against capability grants directly — no
@@ -198,7 +256,7 @@ public final class ComposeAdmin {
                 Optional.of(effectivePlanIri),
                 artifactUrl,
                 Optional.of(digestHex));
-        policyStoreWriter.write(turtle.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+        writeSink.accept(turtle.getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 effectivePlanIri);
         return new ComposedResult(artifactUrl, digestHex, composed.length, effectivePlanIri);
     }

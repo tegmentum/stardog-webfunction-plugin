@@ -10,6 +10,7 @@ import com.complexible.stardog.api.admin.AdminConnection;
 import com.complexible.stardog.api.admin.AdminConnectionConfiguration;
 import com.google.common.io.Files;
 import ai.tegmentum.stardog.kibble.webfunctions.*;
+import ai.tegmentum.stardog.kibble.webfunctions.compose.TestComposeAdmin;
 import ai.tegmentum.stardog.kibble.webfunctions.compose.TestComposedArtifactStore;
 import ai.tegmentum.stardog.kibble.webfunctions.compose.TestComposeOrchestratorClient;
 import ai.tegmentum.stardog.kibble.webfunctions.compose.TestComposePolicyStoreWriter;
@@ -50,6 +51,7 @@ import java.nio.charset.Charset;
     // Compose Wave B unit tests — pure JVM, no Stardog needed but
     // discovered through the suite so `mvn test` runs them alongside
     // the rest of the plugin's tests.
+    TestComposeAdmin.class,
     TestComposedArtifactStore.class,
     TestComposeOrchestratorClient.class,
     TestComposePolicyStoreWriter.class,
