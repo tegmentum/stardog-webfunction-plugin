@@ -87,6 +87,7 @@ public class TestHostCallbacksWasmDispatch {
             @Override
             public <R> R invoke(final String url,
                                 final MappingDictionary dict,
+                                final String functionName,
                                 final Value[] args,
                                 final java.util.function.Function<SelectQueryResult, R> body)
                     throws Exception {
@@ -122,6 +123,7 @@ public class TestHostCallbacksWasmDispatch {
             @Override
             public <R> R invoke(final String url,
                                 final MappingDictionary dict,
+                                final String functionName,
                                 final Value[] args,
                                 final java.util.function.Function<SelectQueryResult, R> body)
                     throws Exception {
@@ -170,6 +172,7 @@ public class TestHostCallbacksWasmDispatch {
             @Override
             public <R> R invoke(final String url,
                                 final MappingDictionary dict,
+                                final String functionName,
                                 final Value[] args,
                                 final java.util.function.Function<SelectQueryResult, R> body) {
                 invokerCalled.set(true);
@@ -203,6 +206,7 @@ public class TestHostCallbacksWasmDispatch {
                 @Override
                 public <R> R invoke(final String url,
                                     final MappingDictionary dict,
+                                    final String functionName,
                                     final Value[] args,
                                     final java.util.function.Function<SelectQueryResult, R> body) {
                     invokerCalled.set(true);
@@ -236,6 +240,7 @@ public class TestHostCallbacksWasmDispatch {
             @Override
             public <R> R invoke(final String url,
                                 final MappingDictionary dict,
+                                final String functionName,
                                 final Value[] args,
                                 final java.util.function.Function<SelectQueryResult, R> body)
                     throws Exception {
@@ -263,6 +268,7 @@ public class TestHostCallbacksWasmDispatch {
             @Override
             public <R> R invoke(final String url,
                                 final MappingDictionary dict,
+                                final String functionName,
                                 final Value[] args,
                                 final java.util.function.Function<SelectQueryResult, R> body)
                     throws Exception {
@@ -312,6 +318,7 @@ public class TestHostCallbacksWasmDispatch {
             @Override
             public <R> R invoke(final String url,
                                 final MappingDictionary dict,
+                                final String functionName,
                                 final Value[] args,
                                 final java.util.function.Function<SelectQueryResult, R> body)
                     throws Exception {
@@ -356,6 +363,7 @@ public class TestHostCallbacksWasmDispatch {
             @Override
             public <R> R invoke(final String url,
                                 final MappingDictionary dict,
+                                final String functionName,
                                 final Value[] args,
                                 final java.util.function.Function<SelectQueryResult, R> body)
                     throws Exception {
@@ -384,6 +392,7 @@ public class TestHostCallbacksWasmDispatch {
                 @Override
                 public <R> R invoke(final String url,
                                     final MappingDictionary dict,
+                                    final String functionName,
                                     final Value[] args,
                                     final java.util.function.Function<SelectQueryResult, R> body) {
                     reason.set("should not have been called");
@@ -415,6 +424,7 @@ public class TestHostCallbacksWasmDispatch {
             @Override
             public <R> R invoke(final String url,
                                 final MappingDictionary dict,
+                                final String functionName,
                                 final Value[] args,
                                 final java.util.function.Function<SelectQueryResult, R> body) {
                 throw new IllegalStateException("should not reach invoker");

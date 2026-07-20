@@ -100,12 +100,16 @@ public class StardogWasmInstance implements Closeable {
     private boolean mappingDictionaryIsSet;
 
     // Dispatch state. The base sparql-extension world routes every filter
-    // call through `extension.call(name, args)` — the name is discovered
-    // once via `extension.register()` and cached for this instance's
-    // lifetime. Aggregate lifecycle is: `new-aggregate(name)` returns a
-    // per-group resource handle, `step` accumulates, `finish` returns the
-    // value; the resource is dropped when this instance closes.
-    private volatile String cachedFilterFunctionName;
+    // call through `extension.call(name, args)` — the full set of registered
+    // filter function names is discovered once via `extension.register()`
+    // and cached for this instance's lifetime. Callers that pass a
+    // function name into {@link #evaluate(String, Value...)} route by
+    // exact name; the legacy {@link #evaluate(Value...)} overload retains
+    // pick-first-descriptor semantics for pre-multi-function callers.
+    // Aggregate lifecycle is: `new-aggregate(name)` returns a per-group
+    // resource handle, `step` accumulates, `finish` returns the value;
+    // the resource is dropped when this instance closes.
+    private volatile java.util.List<String> cachedFilterFunctionNames;
     private volatile String cachedAggregateName;
     private WitCallableResource aggregateResource;
 
@@ -548,6 +552,31 @@ public class StardogWasmInstance implements Closeable {
         return componentExtensionCall(values);
     }
 
+    /**
+     * Dispatch to a filter function by explicit name via the base
+     * extension's {@code call(name, args)} export. Callers who want the
+     * legacy pick-first-descriptor auto-discovery pass {@code null} or
+     * empty {@code functionName} — but the auto-discovery variant here
+     * only permits it when the callee exports exactly one filter
+     * function; a multi-function callee with no name is an
+     * {@link AmbiguousFilterFunctionException} because the choice cannot
+     * be inferred. When {@code functionName} is set, the name must
+     * appear in the component's {@link #registeredFilterFunctionNames()}
+     * list; otherwise a {@link NoSuchFilterFunctionException} is thrown.
+     *
+     * <p>The pre-existing {@link #evaluate(Value...)} overload preserves
+     * the older "pick first descriptor" behaviour used by
+     * {@link Call#evaluate} and
+     * {@link WebFunctionServiceOperator#evaluate} — this overload is
+     * strict so the {@code wasm-callbacks/invoke-wasm} dispatch can
+     * route by name (or reject ambiguity) without silently picking one
+     * of several exported functions.
+     */
+    public SelectQueryResult evaluate(final String functionName, final Value... values) throws IOException {
+        stampComponentInstanceOnCurrentContext();
+        return componentExtensionCallByName(functionName, values);
+    }
+
     public SelectQueryResult doc() throws IOException {
         // `doc` lives on the stardog-extension overlay world, not the base
         // sparql-extension world. Test components target the base world only,
@@ -598,8 +627,51 @@ public class StardogWasmInstance implements Closeable {
      * webfunction wasm URL binds to exactly one filter.
      */
     private SelectQueryResult componentExtensionCall(final Value[] values) throws IOException {
-        final WitValueMarshaller m = marshaller();
         final String fnName = ensureFilterFunctionName();
+        return dispatchExtensionCall(fnName, values);
+    }
+
+    /**
+     * Strict-name variant of {@link #componentExtensionCall(Value[])}
+     * used by the {@code wasm-callbacks/invoke-wasm} path — enforces
+     * name matching against the registered surface and rejects
+     * ambiguity when the caller did not name a target.
+     */
+    private SelectQueryResult componentExtensionCallByName(final String requested,
+                                                           final Value[] values) throws IOException {
+        final java.util.List<String> names = registeredFilterFunctionNames();
+        if (names.isEmpty()) {
+            throw new IOException(
+                    "component exports no filter functions; extension.register returned []");
+        }
+        final String fnName;
+        if (requested == null || requested.isEmpty()) {
+            if (names.size() > 1) {
+                throw new AmbiguousFilterFunctionException(
+                        "component exports multiple filter functions (" + String.join(", ", names)
+                        + "); caller must specify function-name");
+            }
+            fnName = names.get(0);
+        } else {
+            if (!names.contains(requested)) {
+                throw new NoSuchFilterFunctionException(
+                        "component does not export filter function '" + requested + "'; "
+                        + "available: " + String.join(", ", names));
+            }
+            fnName = requested;
+        }
+        return dispatchExtensionCall(fnName, values);
+    }
+
+    /**
+     * Fire {@code extension.call(name, args)} on the underlying component
+     * instance, unwrap the {@code result<term, string>} return, and box
+     * the single {@code term} as a 1x1 {@link SelectQueryResult}. Shared
+     * by both the legacy {@link #componentExtensionCall(Value[])} and
+     * the strict {@link #componentExtensionCallByName} entry-points.
+     */
+    private SelectQueryResult dispatchExtensionCall(final String fnName, final Value[] values) throws IOException {
+        final WitValueMarshaller m = marshaller();
         final WitValue result = (WitValue) instance.invokeWit(
                 EXT_CALL,
                 WitValueMarshaller.witString(fnName),
@@ -618,20 +690,64 @@ public class StardogWasmInstance implements Closeable {
     }
 
     /**
+     * Signalled by {@link #evaluate(String, Value...)} when the caller
+     * passed a null / empty {@code functionName} but the component
+     * exports more than one filter function — the choice cannot be
+     * inferred, so the caller must specify. Mapped to a wasm-call-error
+     * {@code invocation-error} arm at the {@code wasm-callbacks}
+     * boundary.
+     */
+    public static final class AmbiguousFilterFunctionException extends IOException {
+        public AmbiguousFilterFunctionException(final String message) { super(message); }
+    }
+
+    /**
+     * Signalled by {@link #evaluate(String, Value...)} when the caller
+     * asked for a function name that the component's
+     * {@code extension.register()} export did not advertise. Mapped to
+     * a wasm-call-error {@code not-found} arm at the
+     * {@code wasm-callbacks} boundary; a future host-callbacks WIT
+     * revision may add a dedicated {@code function-not-found} arm.
+     */
+    public static final class NoSuchFilterFunctionException extends IOException {
+        public NoSuchFilterFunctionException(final String message) { super(message); }
+    }
+
+    /**
      * Discover and cache the filter function name to pass to {@code
-     * extension.call}. Called on first {@code evaluate()} — thereafter
-     * reused for every subsequent call on this instance.
+     * extension.call} — legacy pick-first-descriptor semantics used by
+     * {@link #evaluate(Value...)}. Called on first {@code evaluate()} —
+     * thereafter reused for every subsequent call on this instance.
      */
     private String ensureFilterFunctionName() throws IOException {
-        String name = cachedFilterFunctionName;
-        if (name != null) return name;
+        final java.util.List<String> names = registeredFilterFunctionNames();
+        if (names.isEmpty()) {
+            throw new IOException(
+                    "component exports no filter functions; extension.register returned []");
+        }
+        return names.get(0);
+    }
+
+    /**
+     * List every filter function name the component's
+     * {@code extension.register()} export returned. Cached for the
+     * lifetime of this instance so the register call itself only fires
+     * once per callee — the base sparql-extension contract states
+     * {@code register} is invoked exactly once at load.
+     *
+     * <p>Public so callers (notably the {@code wasm-callbacks}
+     * dispatch in {@link HostCallbacks}) can inspect the exported
+     * surface without triggering a dispatch.
+     */
+    public java.util.List<String> registeredFilterFunctionNames() throws IOException {
+        java.util.List<String> cached = cachedFilterFunctionNames;
+        if (cached != null) return cached;
         synchronized (this) {
-            if (cachedFilterFunctionName == null) {
+            if (cachedFilterFunctionNames == null) {
                 final WitValue descriptors = (WitValue) instance.invokeWit(EXT_REGISTER);
-                cachedFilterFunctionName = firstDescriptorName(descriptors, "register",
-                        "component exports no filter functions; extension.register returned []");
+                cachedFilterFunctionNames = allDescriptorNames(descriptors, "register");
             }
-            return cachedFilterFunctionName;
+            return cachedFilterFunctionNames;
         }
     }
 
@@ -716,6 +832,30 @@ public class StardogWasmInstance implements Closeable {
         }
         final WitRecord first = (WitRecord) elems.get(0);
         return ((WitString) first.getField("name")).getValue();
+    }
+
+    /**
+     * Extract every descriptor's name from a
+     * {@code list<function-descriptor>} return (as opposed to
+     * {@link #firstDescriptorName}, which stops at index 0). Returned
+     * list is an immutable snapshot suitable for caching.
+     */
+    private static java.util.List<String> allDescriptorNames(final WitValue witValue,
+                                                             final String registerFnName) throws IOException {
+        if (!(witValue instanceof WitList)) {
+            throw new IOException("extension." + registerFnName + " return is not a list: "
+                    + (witValue == null ? "null" : witValue.getClass().getName()));
+        }
+        final java.util.List<WitValue> elems = ((WitList) witValue).getElements();
+        if (elems.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        final java.util.List<String> out = new java.util.ArrayList<>(elems.size());
+        for (final WitValue elem : elems) {
+            final WitRecord rec = (WitRecord) elem;
+            out.add(((WitString) rec.getField("name")).getValue());
+        }
+        return java.util.Collections.unmodifiableList(out);
     }
 
     private void unwrapVoidResult(final WitValue result) {

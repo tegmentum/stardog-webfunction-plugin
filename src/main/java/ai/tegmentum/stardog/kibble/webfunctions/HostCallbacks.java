@@ -851,11 +851,14 @@ public final class HostCallbacks {
      * {@link StardogWasmInstance#evaluate}, and encodes the resulting
      * single-row {@code SelectQueryResult} as a single {@code term}.
      *
-     * <p>MVP limitation: the {@code function-name} argument is preserved
-     * on the wire but not consulted by dispatch — the base sparql-extension
-     * world auto-discovers a single filter function via register(). A
-     * future revision will thread function-name through
-     * {@link StardogWasmInstance#evaluate}.
+     * <p>The {@code function-name} argument is threaded through to
+     * {@link StardogWasmInstance#evaluate(String, Value...)}: an exact
+     * match against the callee's {@code extension.register()} surface
+     * dispatches; a mismatch surfaces a {@code not-found} arm; an
+     * empty argument against a multi-function callee surfaces
+     * {@code invocation-error} because the choice cannot be inferred
+     * (single-function callees still auto-discover for legacy callers
+     * that leave the argument blank).
      *
      * <p>Single-level nesting rule: rejects a call when the current
      * frame is already inside a wasm-callbacks dispatch. See
@@ -930,8 +933,20 @@ public final class HostCallbacks {
      */
     @FunctionalInterface
     interface CalleeInvoker {
+        /**
+         * Load the callee at {@code url}, dispatch the named function
+         * with {@code args}, and hand the resulting
+         * {@link com.stardog.stark.query.SelectQueryResult} to
+         * {@code body}. The optional {@code functionName} routes the
+         * dispatch by exact name; a null or empty value defers to the
+         * callee's registered surface (single-function callees resolve
+         * automatically; multi-function callees must be named
+         * explicitly, per the base-substrate
+         * {@code wasm-callbacks/invoke-wasm} semantics).
+         */
         <R> R invoke(String url,
                      com.complexible.stardog.index.dictionary.MappingDictionary dict,
+                     String functionName,
                      Value[] args,
                      java.util.function.Function<
                              com.stardog.stark.query.SelectQueryResult, R> body)
@@ -941,19 +956,22 @@ public final class HostCallbacks {
     /**
      * Production {@link CalleeInvoker} — delegates load to
      * {@link CalleeComponentLoader}, dispatch to
-     * {@link StardogWasmInstance#evaluate}. Wrapped in try-with-resources
-     * so the instance + result close on body exit even under exceptions.
+     * {@link StardogWasmInstance#evaluate(String, Value...)} so the
+     * caller's {@code function-name} argument routes by exact name.
+     * Wrapped in try-with-resources so the instance + result close on
+     * body exit even under exceptions.
      */
     static final CalleeInvoker PROD_CALLEE_INVOKER = new CalleeInvoker() {
         @Override
         public <R> R invoke(final String url,
                             final com.complexible.stardog.index.dictionary.MappingDictionary dict,
+                            final String functionName,
                             final Value[] args,
                             final java.util.function.Function<
                                     com.stardog.stark.query.SelectQueryResult, R> body)
                 throws Exception {
             try (StardogWasmInstance instance = CalleeComponentLoader.load(url, dict);
-                 com.stardog.stark.query.SelectQueryResult rs = instance.evaluate(args)) {
+                 com.stardog.stark.query.SelectQueryResult rs = instance.evaluate(functionName, args)) {
                 return body.apply(rs);
             }
         }
@@ -1083,11 +1101,15 @@ public final class HostCallbacks {
                 ctx.componentInstanceOrNull();
         ctx.enterWasmCall();
         try {
-            // function-name is preserved on the wire but not consulted
-            // by dispatch — the base sparql-extension world auto-discovers
-            // the single filter function via register(); a WIT-level
-            // explicit function-name dispatch is deferred to a follow-up.
-            return invoker.invoke(url, ctx.dictionary(), callArgs, rs -> {
+            // function-name is threaded through to the callee dispatch:
+            //   * non-null / non-empty → strict lookup against the
+            //     callee's registered surface (NoSuchFilterFunctionException
+            //     → not-found).
+            //   * null / empty         → single-function callees still
+            //     auto-discover; multi-function callees surface
+            //     AmbiguousFilterFunctionException → invocation-error
+            //     because the choice cannot be inferred.
+            return invoker.invoke(url, ctx.dictionary(), functionNameOrNull, callArgs, rs -> {
                 if (returnShape == CalleeReturnShape.SINGLE_TERM) {
                     return new Object[] { ComponentVal.ok(
                         encodeSingleTermFromResult(rs)) };
@@ -1096,6 +1118,17 @@ public final class HostCallbacks {
                         encodeListOfBindingFromResult(rs, ctx.maxRows())) };
                 }
             });
+        } catch (StardogWasmInstance.NoSuchFilterFunctionException nsfe) {
+            // Explicit function-name did not match any registered filter
+            // — closest existing wasm-call-error arm is not-found.
+            return new Object[] { ComponentVal.err(wasmCallError("not-found",
+                "invoke-wasm: " + nsfe.getMessage())) };
+        } catch (StardogWasmInstance.AmbiguousFilterFunctionException ambig) {
+            // Caller omitted function-name but callee exports more than
+            // one filter function — invocation-error covers "caller did
+            // not supply the argument needed to disambiguate".
+            return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
+                "invoke-wasm: " + ambig.getMessage())) };
         } catch (java.net.MalformedURLException mue) {
             return new Object[] { ComponentVal.err(wasmCallError("not-found",
                 "invoke-wasm: malformed callee url '" + url + "': "
