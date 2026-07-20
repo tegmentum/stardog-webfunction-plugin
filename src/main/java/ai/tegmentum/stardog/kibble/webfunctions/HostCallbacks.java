@@ -1500,38 +1500,138 @@ public final class HostCallbacks {
 
     // ---- tegmentum:webfunction/sink-query-callbacks@0.1.0 ------------------
 
-    /** {@code execute-sink-select: func(sink-name: string, sparql: string)
-     *  -> result<list<binding>, sink-query-error>}. */
+    /**
+     * {@code execute-sink-select: func(sink-name: string, sparql: string)
+     *  -> result<list<binding>, sink-query-error>}.
+     *
+     * <p>Wave A intentionally does NOT implement SPARQL-over-sink — the
+     * reference in-memory sink does not embed a SPARQL evaluator, and
+     * adding oxigraph or Jena for a Wave A "just get it compiling"
+     * would drag a dep the plugin does not otherwise need. Returns
+     * {@code backend-error} (NOT {@code not-permitted} — the distinction
+     * matters: permission checks pass; the backend simply cannot
+     * evaluate the query text). Guests migrating today either use
+     * {@link #sinkQueryScanQuads} or wait on the follow-on wave that
+     * lands a SPARQL adapter (probably via the Oxigraph reference impl
+     * used through a shared-store binding).
+     *
+     * <p>An unknown sink still returns {@code no-such-sink} so error
+     * discrimination stays consistent across the interface's methods.
+     */
     public static WitHostFunction sinkQueryExecuteSelect() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "sink-query-callbacks", "execute-sink-select", sinkName);
             if (ctx != null) ctx.chargeToll("sink-query-callbacks.execute-sink-select");
-            return new Object[] { ComponentVal.err(sinkQueryError("not-permitted",
-                "sink-query-callbacks: execute-sink-select not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side sink registry). Sink name requested: '"
-                + sinkName + "'.")) };
+            if (!SinkRegistry.INSTANCE.contains(sinkName)) {
+                return new Object[] { ComponentVal.err(sinkQueryError("no-such-sink",
+                    "sink-query-callbacks: no sink registered under name '" + sinkName + "'.")) };
+            }
+            return new Object[] { ComponentVal.err(sinkQueryError("backend-error",
+                "sink-query-callbacks: execute-sink-select not yet implemented on the Stardog "
+                + "plugin - the in-memory sink backend has no SPARQL evaluator. Guests can use "
+                + "scan-sink-quads for BGP-shape reads today; SPARQL-over-sink support is "
+                + "follow-on work. Sink name: '" + sinkName + "'.")) };
         };
     }
 
-    /** {@code scan-sink-quads: func(sink-name: string, option<term>, option<term>, option<term>)
-     *  -> result<list<quad>, sink-query-error>}. */
+    /**
+     * {@code scan-sink-quads: func(sink-name: string, option<term>, option<term>, option<term>)
+     *  -> result<list<quad>, sink-query-error>}.
+     *
+     * <p>Linear filter over the sink's accumulated quads. Each of the
+     * three position args is optional — {@code none} matches anything;
+     * {@code some(term)} requires exact term equality (see
+     * {@link #termsEqualComponent}). The graph position is not filterable
+     * at MVP; the memo defers named-graph scans until a production
+     * consumer needs one.
+     */
     public static WitHostFunction sinkQueryScanQuads() {
         return args -> {
             final CallbackContext ctx = CallbackContext.current();
             final String sinkName = args.length > 0 ? ((ComponentVal) args[0]).asString() : "";
             enforceCapability(ctx, "sink-query-callbacks", "scan-sink-quads", sinkName);
             if (ctx != null) ctx.chargeToll("sink-query-callbacks.scan-sink-quads");
-            return new Object[] { ComponentVal.err(sinkQueryError("not-permitted",
-                "sink-query-callbacks: scan-sink-quads not supported by the Stardog plugin "
-                + "(MVP stub — no substrate-side sink registry). Sink name requested: '"
-                + sinkName + "'.")) };
+            final Optional<SinkEntry> entryOpt = SinkRegistry.INSTANCE.sink(sinkName);
+            if (entryOpt.isEmpty()) {
+                return new Object[] { ComponentVal.err(sinkQueryError("no-such-sink",
+                    "sink-query-callbacks: no sink registered under name '" + sinkName + "'.")) };
+            }
+            final ComponentVal subjectFilter = args.length > 1
+                    ? ((ComponentVal) args[1]).asSome().orElse(null) : null;
+            final ComponentVal predicateFilter = args.length > 2
+                    ? ((ComponentVal) args[2]).asSome().orElse(null) : null;
+            final ComponentVal objectFilter = args.length > 3
+                    ? ((ComponentVal) args[3]).asSome().orElse(null) : null;
+
+            final List<ComponentVal> matches = new ArrayList<>();
+            for (final java.util.Iterator<ComponentVal> it = entryOpt.get().iterateQuads();
+                 it.hasNext(); ) {
+                final ComponentVal quad = it.next();
+                final Map<String, ComponentVal> fields = quad.asRecord();
+                if (subjectFilter != null
+                        && !termsEqualComponent(subjectFilter, fields.get("subject"))) continue;
+                if (predicateFilter != null
+                        && !termsEqualComponent(predicateFilter, fields.get("predicate"))) continue;
+                if (objectFilter != null
+                        && !termsEqualComponent(objectFilter, fields.get("object"))) continue;
+                matches.add(quad);
+            }
+            return new Object[] { ComponentVal.ok(ComponentVal.list(matches)) };
         };
     }
 
     private static ComponentVal sinkQueryError(final String armName, final String message) {
         return ComponentVal.variant(armName, ComponentVal.string(message));
+    }
+
+    /**
+     * Structural equality for two WIT {@code term} variants ({@code
+     * named-node} / {@code blank-node} / {@code literal} / {@code triple}).
+     * Deliberate rather than relying on {@link Object#equals} on
+     * {@link ComponentVal} — the ComponentVal contract does not guarantee
+     * structural equals, and mirroring the Oxigraph reference's
+     * {@code terms_equal} keeps the sink-scan semantics identical
+     * across engines.
+     *
+     * <p>The {@code triple} arm (RDF-star quoted triple) always returns
+     * false — sink-scan BGP filtering over quoted triples is out of
+     * MVP scope; the Oxigraph reference impl makes the same call.
+     */
+    private static boolean termsEqualComponent(final ComponentVal a, final ComponentVal b) {
+        if (a == null || b == null) return false;
+        final ComponentVariant av = a.asVariant();
+        final ComponentVariant bv = b.asVariant();
+        if (!av.getCaseName().equals(bv.getCaseName())) return false;
+        switch (av.getCaseName()) {
+            case "named-node":
+            case "blank-node":
+                return av.getPayload().orElseThrow().asString()
+                        .equals(bv.getPayload().orElseThrow().asString());
+            case "literal": {
+                final Map<String, ComponentVal> af = av.getPayload().orElseThrow().asRecord();
+                final Map<String, ComponentVal> bf = bv.getPayload().orElseThrow().asRecord();
+                if (!af.get("value").asString().equals(bf.get("value").asString())) return false;
+                final Optional<ComponentVal> aDt = af.get("datatype").asSome();
+                final Optional<ComponentVal> bDt = bf.get("datatype").asSome();
+                if (aDt.isPresent() != bDt.isPresent()) return false;
+                if (aDt.isPresent() && !aDt.get().asString().equals(bDt.get().asString())) return false;
+                final Optional<ComponentVal> aLg = af.get("language").asSome();
+                final Optional<ComponentVal> bLg = bf.get("language").asSome();
+                if (aLg.isPresent() != bLg.isPresent()) return false;
+                if (aLg.isPresent() && !aLg.get().asString().equals(bLg.get().asString())) return false;
+                return true;
+            }
+            case "triple":
+                // RDF-star quoted triples in BGP position are out of MVP
+                // scope. Matches the Oxigraph reference impl's
+                // `terms_equal`, which treats any two Triple terms as
+                // unequal to keep the filter loop total.
+                return false;
+            default:
+                return false;
+        }
     }
 
     // ---- tegmentum:webfunction/document-sink-callbacks@0.1.0 ---------------
