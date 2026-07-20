@@ -71,6 +71,24 @@ public final class WebFunctionConfig {
     public static final String PROP_TRACKER_SQLITE_PATH  = "webfunctions.tracker.sqlite.path";
     public static final String PROP_TRACKER_SQLITE_SINKS = "webfunctions.tracker.sqlite.sinks";
 
+    // Compose Wave B — optional URL prefix operators can set to override
+    // the default {@code sha256://<hex>} scheme emitted in composition
+    // RDF. When set, {@link ai.tegmentum.stardog.kibble.webfunctions.compose.ComposeAdmin}
+    // emits {@code <prefix><digest-hex>} as the artifact URL in the
+    // {@code comp:hasArtifact} triple instead of {@code sha256://<hex>}.
+    //
+    // The plugin still persists composed bytes to the local blob store
+    // (${stardog.home}/webfunctions-compose/artifacts/<hex>.wasm) — this
+    // key only rewrites the RDF-facing URL. The operator is responsible
+    // for making the resulting URL fetchable (upload out-of-band or via
+    // a separate pipeline). MVP is emit-only, not PUT.
+    //
+    // Example: setting the prefix to
+    // {@code https://cdn.example.com/artifacts/} yields
+    // {@code https://cdn.example.com/artifacts/<hex>} in RDF. Empty or
+    // unset preserves the default {@code sha256://<hex>} emission.
+    public static final String PROP_COMPOSE_ARTIFACT_URL_PREFIX = "webfunctions.compose.artifact-url-prefix";
+
     // Fuel metering Phase 1 — defensive-only layer.
     //
     // Off by default so existing deployments continue unchanged
@@ -618,6 +636,33 @@ public final class WebFunctionConfig {
      */
     public static List<String> getTrackerSqliteSinks() {
         return parseCommaList(PROP_TRACKER_SQLITE_SINKS);
+    }
+
+    /**
+     * Optional URL prefix that overrides the default {@code sha256://}
+     * scheme emitted in composition RDF's {@code comp:hasArtifact}
+     * triple. When present, {@link ai.tegmentum.stardog.kibble.webfunctions.compose.ComposeAdmin}
+     * concatenates {@code prefix + digest-hex} to build the RDF-facing
+     * artifact URL; otherwise the canonical {@code sha256://<hex>} form
+     * is emitted.
+     *
+     * <p>Local persistence is unaffected — bytes still land at
+     * {@code ${stardog.home}/webfunctions-compose/artifacts/<hex>.wasm}
+     * regardless of the prefix. Operator is responsible for making the
+     * emitted URL fetchable (out-of-band upload); no PUT path is wired
+     * in MVP. URL scheme is not validated — any string the operator
+     * supplies is accepted verbatim.
+     *
+     * <p>{@link java.util.Optional#empty()} when the property is unset,
+     * empty, or whitespace-only; same trim discipline as
+     * {@link #getTrackerSqlitePath()}.
+     */
+    public static java.util.Optional<String> getArtifactUrlPrefix() {
+        final String raw = System.getProperty(PROP_COMPOSE_ARTIFACT_URL_PREFIX);
+        if (raw == null) return java.util.Optional.empty();
+        final String trimmed = raw.trim();
+        if (trimmed.isEmpty()) return java.util.Optional.empty();
+        return java.util.Optional.of(trimmed);
     }
 
     /** Shared comma-list parser for the two config-driven registry
