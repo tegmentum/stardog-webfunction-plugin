@@ -10,15 +10,9 @@ import com.complexible.stardog.security.Permission;
 import com.complexible.stardog.security.PermissionManager;
 import com.complexible.stardog.security.ResourceExistsException;
 import com.complexible.stardog.security.RoleManager;
+import com.complexible.stardog.security.SecurityResourceType;
 import com.complexible.stardog.security.UserManager;
 import com.google.common.collect.ImmutableList;
-
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 
 /**
  * Testcontainers-side helper for provisioning Stardog users, roles, and
@@ -179,63 +173,27 @@ public final class StardogUserProvisioner {
     }
 
     /**
-     * Grant a raw Shiro wildcard permission to a user via Stardog's HTTP
-     * admin API. Necessary for plugin-registered resource types whose
-     * canonical action string is NOT one of the enumerated
-     * {@link ActionType} values — the plugin's
-     * {@code web-function-callback} resource type uses {@code "invoke"}
-     * as its action, and there is no {@code ActionType.INVOKE} to hand
-     * to the Java {@link PermissionManager} API.
+     * Grant a user a permission against a plugin-registered
+     * {@link SecurityResourceType} — the escape hatch for the plugin's
+     * own resource types ({@code WebFunctionResourceType},
+     * {@code WebFunctionCallbackResourceType}) that are not covered by
+     * the {@link #grantDatabaseRead}-style database-scoped helpers.
      *
-     * <p>Endpoint: {@code PUT /admin/permissions/user/{name}}. Body:
-     * <pre>
-     *   {"action":"...", "resource_type":"...", "resource":[...]}
-     * </pre>
-     * Stardog accepts arbitrary strings for {@code action} + {@code
-     * resource_type}, mirroring the {@code stardog-admin user permission
-     * add} CLI's positional-arg surface.
+     * <p>Uses the same idempotent {@link PermissionManager#addUserPerm}
+     * path as the built-in helpers — the manager throws
+     * {@link ResourceExistsException} on a re-grant, which we swallow.
      *
-     * <p>Idempotent — a 409 on re-grant is a no-op; any other non-2xx is
-     * a hard failure that surfaces as {@link IllegalStateException}.
+     * <p>Both {@link ActionType} and {@link SecurityResourceType} are
+     * proper enum / interface values, so the compiler catches typos
+     * that the string-based HTTP admin fallback would only surface at
+     * runtime.
      */
-    public void grantUserPermissionRaw(final String username,
-                                       final String action,
-                                       final String resourceType,
-                                       final String... resourceNames) {
-        final StringBuilder body = new StringBuilder();
-        body.append("{\"action\":\"").append(action)
-                .append("\",\"resource_type\":\"").append(resourceType)
-                .append("\",\"resource\":[");
-        for (int i = 0; i < resourceNames.length; i++) {
-            if (i > 0) body.append(',');
-            body.append('"').append(jsonEscape(resourceNames[i])).append('"');
-        }
-        body.append("]}");
-
-        final HttpClient http = HttpClient.newHttpClient();
-        final String auth = Base64.getEncoder().encodeToString(
-                (ADMIN_USER + ":" + ADMIN_PASS).getBytes(StandardCharsets.UTF_8));
-        final HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(serverUrl + "/admin/permissions/user/" + username))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Basic " + auth)
-                .PUT(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8))
-                .build();
-        final HttpResponse<String> resp;
-        try {
-            resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-        } catch (Exception e) {
-            throw new IllegalStateException(
-                    "PUT /admin/permissions/user/" + username + " failed: " + e.getMessage(), e);
-        }
-        final int status = resp.statusCode();
-        // 2xx → granted. 409 → already-granted (idempotent no-op).
-        // Everything else → surface for the caller to diagnose.
-        if (status >= 200 && status < 300) return;
-        if (status == 409) return;
-        throw new IllegalStateException(
-                "PUT /admin/permissions/user/" + username + " returned " + status
-                        + ": " + resp.body());
+    public void grantUserPermission(final String username,
+                                    final ActionType action,
+                                    final SecurityResourceType resourceType,
+                                    final String... resourceNames) {
+        addUserPermQuietly(username, action, resourceType,
+                ImmutableList.copyOf(resourceNames));
     }
 
     // ---- data seeding ---------------------------------------------------
@@ -281,7 +239,7 @@ public final class StardogUserProvisioner {
      */
     private void addUserPermQuietly(final String username,
                                     final ActionType action,
-                                    final CoreResourceType resourceType,
+                                    final SecurityResourceType resourceType,
                                     final ImmutableList<String> resourceNames) {
         try (AdminConnection admin = openAdmin()) {
             final PermissionManager perms = admin.getPermissionManager();
@@ -291,19 +249,5 @@ public final class StardogUserProvisioner {
                 // Already granted — leave as-is.
             }
         }
-    }
-
-    /** Minimal JSON-string escape — quotes + backslashes only. */
-    private static String jsonEscape(final String s) {
-        if (s == null) return "";
-        final StringBuilder b = new StringBuilder(s.length());
-        for (int i = 0; i < s.length(); i++) {
-            final char c = s.charAt(i);
-            if (c == '"' || c == '\\') {
-                b.append('\\');
-            }
-            b.append(c);
-        }
-        return b.toString();
     }
 }

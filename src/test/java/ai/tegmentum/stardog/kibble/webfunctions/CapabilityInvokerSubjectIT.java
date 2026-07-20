@@ -7,6 +7,7 @@ import com.complexible.stardog.api.Connection;
 import com.complexible.stardog.api.ConnectionConfiguration;
 import com.complexible.stardog.api.admin.AdminConnection;
 import com.complexible.stardog.api.admin.AdminConnectionConfiguration;
+import com.complexible.stardog.security.ActionType;
 import com.complexible.stardog.security.SecurityOptions;
 import com.stardog.stark.Value;
 import com.stardog.stark.query.SelectQueryResult;
@@ -162,24 +163,24 @@ public class CapabilityInvokerSubjectIT {
         prov.grantNamedGraphRead(USER_ALICE, DB, GRAPH_G1);
         // Both users need the Shiro-level web-function-callback
         // permission so the CapabilityEnforcer's Shiro check
-        // (perCallback step 3) clears. `web-function-callback`
-        // uses `invoke` as its action, which is not in
-        // com.complexible.stardog.security.ActionType — so we grant
-        // via the raw HTTP admin API rather than the Java
-        // PermissionManager. See the extended comment on
-        // StardogUserProvisioner.grantUserPermissionRaw for why.
-        prov.grantUserPermissionRaw(USER_ALICE, "invoke",
-                WebFunctionCallbackResourceType.ID,
+        // (perCallback step 3) clears. The verb aligns with
+        // ActionType.EXECUTE so the grant goes through the Java
+        // PermissionManager rather than any HTTP admin fallback —
+        // WebFunctionCallbackResourceType is a plugin-registered
+        // SecurityResourceType, and Permission's constructor accepts
+        // that interface directly.
+        prov.grantUserPermission(USER_ALICE, ActionType.EXECUTE,
+                WebFunctionCallbackResourceType.INSTANCE,
                 "graph-callbacks/execute-query");
-        prov.grantUserPermissionRaw(USER_BOB, "invoke",
-                WebFunctionCallbackResourceType.ID,
+        prov.grantUserPermission(USER_BOB, ActionType.EXECUTE,
+                WebFunctionCallbackResourceType.INSTANCE,
                 "graph-callbacks/execute-query");
         // Alice and Bob also need EXECUTE on the wasm URL itself —
         // Stardog checks WebFunctionResourceType at load time.
-        prov.grantUserPermissionRaw(USER_ALICE, "execute",
-                "web-function", WASM_URL);
-        prov.grantUserPermissionRaw(USER_BOB, "execute",
-                "web-function", WASM_URL);
+        prov.grantUserPermission(USER_ALICE, ActionType.EXECUTE,
+                WebFunctionResourceType.INSTANCE, WASM_URL);
+        prov.grantUserPermission(USER_BOB, ActionType.EXECUTE,
+                WebFunctionResourceType.INSTANCE, WASM_URL);
 
         // Seed the fixture triple in G1. Uses the admin credential so
         // the seed does not depend on the users-under-test's own
