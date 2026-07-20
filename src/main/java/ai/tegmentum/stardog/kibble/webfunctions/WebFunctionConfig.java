@@ -56,6 +56,21 @@ public final class WebFunctionConfig {
     // boot; there is no WIT-side registration method by design.
     public static final String PROP_FULLTEXT_INDEXES = "webfunctions.fulltext.indexes";
 
+    // Tracker-sink registry — Wave B (SQLite JDBC-backed). Path to the
+    // on-disk SQLite database that {@link SqliteTrackerBackend} opens at
+    // plugin startup and comma-separated list of sink names permitted
+    // to `register-tracker-tables` against it. Both keys optional; when
+    // {@link #PROP_TRACKER_SQLITE_PATH} is unset the starter no-ops
+    // (backend stays closed; every tracker-sink-callbacks dispatch
+    // returns `no-such-sink` — same mirror-of-config discipline the
+    // sink / fulltext registries use).
+    //
+    // The path may be `:memory:` for ephemeral tests. Production
+    // wiring resolves against ${stardog.home}/webfunctions/tracker.sqlite
+    // (the caller sets this via -D at plugin install time).
+    public static final String PROP_TRACKER_SQLITE_PATH  = "webfunctions.tracker.sqlite.path";
+    public static final String PROP_TRACKER_SQLITE_SINKS = "webfunctions.tracker.sqlite.sinks";
+
     // Fuel metering Phase 1 — defensive-only layer.
     //
     // Off by default so existing deployments continue unchanged
@@ -571,6 +586,38 @@ public final class WebFunctionConfig {
      */
     public static List<String> getFulltextIndexNames() {
         return parseCommaList(PROP_FULLTEXT_INDEXES);
+    }
+
+    /**
+     * Path to the SQLite database backing the tracker-sink registry
+     * (Wave B). Empty {@link java.util.Optional} when the property is
+     * unset — {@code SqliteTrackerBackendStarter} treats that as "no
+     * tracker-sink wiring; leave the backend closed" and every
+     * tracker-sink-callbacks dispatch surfaces {@code no-such-sink}.
+     *
+     * <p>{@code :memory:} yields a per-JVM ephemeral database — useful
+     * for tests and unit-scale demos. Production wiring resolves to
+     * {@code ${stardog.home}/webfunctions/tracker.sqlite} but the
+     * plugin does NOT assume {@code stardog.home}; the caller sets the
+     * path explicitly at install time.
+     */
+    public static java.util.Optional<String> getTrackerSqlitePath() {
+        final String raw = System.getProperty(PROP_TRACKER_SQLITE_PATH);
+        if (raw == null || raw.isEmpty()) return java.util.Optional.empty();
+        return java.util.Optional.of(raw.trim());
+    }
+
+    /**
+     * Names of sinks permitted to register tracker tables against the
+     * Wave B SQLite backend. Parsed with the same comma-list discipline
+     * as {@link #getSinkNames()} / {@link #getFulltextIndexNames()}. A
+     * guest that references a name not in this list surfaces
+     * {@code no-such-sink} even when {@link #getTrackerSqlitePath()} is
+     * present — the allowlist is the operator's fence against schema
+     * declarations by rogue extensions.
+     */
+    public static List<String> getTrackerSqliteSinks() {
+        return parseCommaList(PROP_TRACKER_SQLITE_SINKS);
     }
 
     /** Shared comma-list parser for the two config-driven registry

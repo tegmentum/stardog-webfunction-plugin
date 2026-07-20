@@ -78,6 +78,13 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
         // unset (registry stays empty; every fulltext call returns
         // `no-such-index`).
         kernelModules.addBinding().to(FulltextRegistryStarter.class);
+        // Wave B — SQLite JDBC-backed tracker-sink registry. Opens the
+        // physical SQLite database at
+        // webfunctions.tracker.sqlite.path and seeds the sink allowlist
+        // from webfunctions.tracker.sqlite.sinks. No-op when the path
+        // property is unset (backend stays closed; every tracker-sink-
+        // callbacks dispatch returns `no-such-sink`).
+        kernelModules.addBinding().to(SqliteTrackerBackendStarter.class);
     }
 
     /**
@@ -328,6 +335,46 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
             }
             LOG.info("web-function fulltext registry: registered {} index(es): {}",
                     names.size(), names);
+        }
+    }
+
+    /**
+     * Kernel-install-time bootstrap for the Wave B SQLite tracker-sink
+     * backend. Reads the SQLite database path from
+     * {@link WebFunctionConfig#getTrackerSqlitePath()} and the sink
+     * allowlist from {@link WebFunctionConfig#getTrackerSqliteSinks()},
+     * then calls {@link SqliteTrackerBackend#open(String, java.util.List)}
+     * on the singleton so the tracker-sink-callbacks handlers can route
+     * through it.
+     *
+     * <p>No-op when the path property is unset — the backend stays
+     * closed and every tracker-sink-callbacks dispatch surfaces
+     * {@code no-such-sink} because the allowlist is empty. Mirrors the
+     * {@link SinkRegistryStarter} / {@link FulltextRegistryStarter}
+     * shape.
+     *
+     * <p>Startup discipline: re-install inside a single JVM (unit test
+     * harnesses that spin up the module twice, or ops-side "re-read
+     * config" flows) is handled by the singleton's internal
+     * close-then-reopen path in {@link SqliteTrackerBackend#open}.
+     */
+    static final class SqliteTrackerBackendStarter implements KernelModule {
+
+        private static final Logger LOG = LoggerFactory.getLogger(SqliteTrackerBackendStarter.class);
+
+        @Inject
+        SqliteTrackerBackendStarter() {}
+
+        @Override
+        public void install(final Kernel theKernel) throws StardogException {
+            final java.util.Optional<String> pathOpt = WebFunctionConfig.getTrackerSqlitePath();
+            if (pathOpt.isEmpty()) return;
+
+            final String path = pathOpt.get();
+            final java.util.List<String> sinks = WebFunctionConfig.getTrackerSqliteSinks();
+            SqliteTrackerBackend.INSTANCE.open(path, sinks);
+            LOG.info("web-function tracker-sink backend: opened '{}' with {} sink(s): {}",
+                    path, sinks.size(), sinks);
         }
     }
 }
