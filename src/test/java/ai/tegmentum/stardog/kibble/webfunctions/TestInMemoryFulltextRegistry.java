@@ -193,4 +193,47 @@ public class TestInMemoryFulltextRegistry {
 
         assertThat(idx.search("nothing-matches", null)).isEmpty();
     }
+
+    // ---- config parsing (webfunctions.fulltext.indexes) -------------
+
+    @Test
+    public void configUnsetYieldsEmptyList() {
+        System.clearProperty(WebFunctionConfig.PROP_FULLTEXT_INDEXES);
+        assertThat(WebFunctionConfig.getFulltextIndexNames()).isEmpty();
+    }
+
+    @Test
+    public void configSingleName() {
+        System.setProperty(WebFunctionConfig.PROP_FULLTEXT_INDEXES, "alpha");
+        try {
+            assertThat(WebFunctionConfig.getFulltextIndexNames())
+                    .containsExactly("alpha");
+        } finally {
+            System.clearProperty(WebFunctionConfig.PROP_FULLTEXT_INDEXES);
+        }
+    }
+
+    @Test
+    public void configMultipleNamesWithWhitespace() {
+        System.setProperty(WebFunctionConfig.PROP_FULLTEXT_INDEXES,
+                "alpha, beta ,  gamma");
+        try {
+            assertThat(WebFunctionConfig.getFulltextIndexNames())
+                    .containsExactly("alpha", "beta", "gamma");
+        } finally {
+            System.clearProperty(WebFunctionConfig.PROP_FULLTEXT_INDEXES);
+        }
+    }
+
+    @Test
+    public void configEmptyPiecesDropped() {
+        System.setProperty(WebFunctionConfig.PROP_FULLTEXT_INDEXES,
+                ",alpha,,,beta,");
+        try {
+            assertThat(WebFunctionConfig.getFulltextIndexNames())
+                    .containsExactly("alpha", "beta");
+        } finally {
+            System.clearProperty(WebFunctionConfig.PROP_FULLTEXT_INDEXES);
+        }
+    }
 }

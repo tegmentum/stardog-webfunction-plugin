@@ -70,6 +70,14 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
         // property is unset (registry stays empty; every sink call
         // returns `no-such-sink`).
         kernelModules.addBinding().to(SinkRegistryStarter.class);
+        // Wave C — fulltext registry (in-memory) for the fulltext-callbacks
+        // host callbacks (insert-documents / delete-documents /
+        // search-index). Config-driven: reads webfunctions.fulltext.indexes
+        // and registers each name into the singleton
+        // {@link InMemoryFulltextRegistry}. No-op when the property is
+        // unset (registry stays empty; every fulltext call returns
+        // `no-such-index`).
+        kernelModules.addBinding().to(FulltextRegistryStarter.class);
     }
 
     /**
@@ -276,6 +284,49 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
                 SinkRegistry.INSTANCE.register(name);
             }
             LOG.info("web-function sink registry: registered {} sink(s): {}",
+                    names.size(), names);
+        }
+    }
+
+    /**
+     * Kernel-install-time bootstrap for the Wave C fulltext index
+     * registry. Reads the comma-separated
+     * {@link WebFunctionConfig#PROP_FULLTEXT_INDEXES} property and
+     * registers each name into the singleton
+     * {@link InMemoryFulltextRegistry}, making it routable by
+     * {@code fulltext-callbacks::insert-documents},
+     * {@code delete-documents}, and {@code search-index}.
+     *
+     * <p>No-op when the property is unset — the registry stays empty and
+     * every fulltext callback surfaces the interface's
+     * {@code no-such-index} arm for any name a guest requests. Same
+     * startup + duplicate-name discipline as {@link SinkRegistryStarter}
+     * — duplicate entries in the property abort install via
+     * {@link InMemoryFulltextRegistry#register(String)}'s
+     * {@link IllegalStateException}.
+     */
+    static final class FulltextRegistryStarter implements KernelModule {
+
+        private static final Logger LOG = LoggerFactory.getLogger(FulltextRegistryStarter.class);
+
+        @Inject
+        FulltextRegistryStarter() {}
+
+        @Override
+        public void install(final Kernel theKernel) throws StardogException {
+            final java.util.List<String> names =
+                    WebFunctionConfig.getFulltextIndexNames();
+            if (names.isEmpty()) return;
+
+            // Reset first so a re-install inside a single JVM (test
+            // harnesses that spin up the module twice, or ops-side
+            // "re-read config" flows) doesn't collide with prior
+            // registrations.
+            InMemoryFulltextRegistry.INSTANCE.reset();
+            for (final String name : names) {
+                InMemoryFulltextRegistry.INSTANCE.register(name);
+            }
+            LOG.info("web-function fulltext registry: registered {} index(es): {}",
                     names.size(), names);
         }
     }

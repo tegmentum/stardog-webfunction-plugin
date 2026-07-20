@@ -17,8 +17,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p><b>Singleton, config-driven.</b> Indexes are registered at plugin
  * startup by {@link WebFunctionServiceModule} from the comma-separated
- * {@code webfunctions.fulltext.indexes} system property and are
- * immutable thereafter — there is deliberately no runtime
+ * {@link WebFunctionConfig#PROP_FULLTEXT_INDEXES} system property and
+ * are immutable thereafter — there is deliberately no runtime
  * {@code register-index} WIT method. A guest that references an
  * unregistered index name gets the interface's {@code no-such-index}
  * error arm. This mirrors the Wave A {@link SinkRegistry} exactly.
@@ -60,8 +60,7 @@ public final class InMemoryFulltextRegistry {
 
     /**
      * Register an index under the given name. Called from startup after
-     * reading the operator-provided list from
-     * {@code webfunctions.fulltext.indexes}.
+     * reading {@link WebFunctionConfig#getFulltextIndexNames()}.
      *
      * @throws IllegalArgumentException when {@code name} is null / blank.
      * @throws IllegalStateException    when an index with the given name
@@ -80,7 +79,7 @@ public final class InMemoryFulltextRegistry {
         if (prev != null) {
             throw new IllegalStateException(
                     "fulltext index '" + name + "' is already registered — "
-                    + "duplicate entry in webfunctions.fulltext.indexes?");
+                    + "duplicate entry in " + WebFunctionConfig.PROP_FULLTEXT_INDEXES + "?");
         }
         return created;
     }

@@ -44,6 +44,18 @@ public final class WebFunctionConfig {
     // declares once at boot.
     public static final String PROP_SINK_NAMES = "webfunctions.sink.names";
 
+    // Fulltext-index registry — Wave C (in-memory only). Comma-separated
+    // list of index names registered at plugin startup by
+    // {@link WebFunctionServiceModule.FulltextRegistryStarter} and made
+    // available to fulltext-callbacks (insert-documents /
+    // delete-documents / search-index).
+    //
+    // Empty (unset) => no indexes registered => every fulltext callback
+    // returns the interface's `no-such-index` arm. Same immutable-at-
+    // runtime discipline as PROP_SINK_NAMES — indexes are declared at
+    // boot; there is no WIT-side registration method by design.
+    public static final String PROP_FULLTEXT_INDEXES = "webfunctions.fulltext.indexes";
+
     // Fuel metering Phase 1 — defensive-only layer.
     //
     // Off by default so existing deployments continue unchanged
@@ -541,7 +553,32 @@ public final class WebFunctionConfig {
      * {@code no-such-sink}.
      */
     public static List<String> getSinkNames() {
-        final String raw = System.getProperty(PROP_SINK_NAMES);
+        return parseCommaList(PROP_SINK_NAMES);
+    }
+
+    /**
+     * Names of fulltext indexes registered at plugin startup by
+     * {@link WebFunctionServiceModule.FulltextRegistryStarter}. Parsed
+     * from the comma-separated {@link #PROP_FULLTEXT_INDEXES} system
+     * property with the same trim / drop-blanks discipline as
+     * {@link #getSinkNames()}. Duplicate names surface as an
+     * {@link IllegalStateException} at
+     * {@link InMemoryFulltextRegistry#register(String)} time.
+     *
+     * <p>Empty list when the property is unset or contains only blanks
+     * — Wave C default: no indexes, every fulltext callback returns
+     * {@code no-such-index}.
+     */
+    public static List<String> getFulltextIndexNames() {
+        return parseCommaList(PROP_FULLTEXT_INDEXES);
+    }
+
+    /** Shared comma-list parser for the two config-driven registry
+     *  keys. Blank / whitespace-only pieces are dropped and every
+     *  remaining piece is trimmed. Returns an empty list when the
+     *  property is unset. */
+    private static List<String> parseCommaList(final String propertyKey) {
+        final String raw = System.getProperty(propertyKey);
         if (raw == null || raw.isEmpty()) {
             return Collections.emptyList();
         }
