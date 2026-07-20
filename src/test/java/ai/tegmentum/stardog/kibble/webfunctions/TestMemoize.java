@@ -9,10 +9,24 @@ import java.util.Optional;
 
 import static org.assertj.core.api.AssertionsForInterfaceTypes.assertThat;
 
+/**
+ * SPARQL-surface tests for wf:memoize. Ports the pre-migration
+ * TestMemoize (which loaded the retired MODULE to_upper.wasm) onto
+ * the checked-in example-uppercase-extension component at
+ * src/test/resources/integration/.
+ *
+ * <p>The wf:compose subtest was dropped alongside TestCompose in the
+ * flat-ABI deletion batch — wf:memoize over a composed function still
+ * dispatches the same way, but composing two wasm components (or a
+ * wasm + built-in) is exercised by the compose orchestrator's own
+ * tests (TestWebFunctionComposeService) rather than repeated here.
+ */
 public class TestMemoize extends AbstractStardogTest {
 
-    final String queryHeader = WebFunctionVocabulary.sparqlPrefix("wf", "0.0.0") +
-            " prefix f: <file:src/test/rust/target/wasm32-unknown-unknown/release/> ";
+    private static final String WASM =
+            "file:src/test/resources/integration/example_uppercase_extension.wasm";
+
+    final String queryHeader = WebFunctionVocabulary.sparqlPrefix("wf", "0.0.0");
 
     @Test
     public void testIriFunctionNoArgs() {
@@ -33,7 +47,7 @@ public class TestMemoize extends AbstractStardogTest {
     public void testIriFunction() {
 
         final String aQuery = queryHeader +
-            " SELECT ?result WHERE { BIND(wf:memoize(10, str(f:to_upper.wasm), \"Hello world\" ) AS ?result) }";
+            " SELECT ?result WHERE { BIND(wf:memoize(10, \"" + WASM + "\", \"Hello world\" ) AS ?result) }";
 
         try(final SelectQueryResult aResult = connection.select(aQuery).execute()) {
 
@@ -56,21 +70,6 @@ public class TestMemoize extends AbstractStardogTest {
             Optional<Literal> aPossibleLiteral = aResult.next().literal("result");
             assertThat(aPossibleLiteral).isPresent();
             assertThat(aPossibleLiteral.get().label()).isEqualTo("HELLO WORLD");
-        }
-    }
-
-    @Test
-    public void testMemoizeAFunctionComposition() {
-
-        final String aQuery = queryHeader +
-                 " SELECT ?result WHERE { BIND(wf:memoize(10, wf:compose(\"ENCODE_FOR_URI\", str(f:to_upper.wasm)), \"Hello world\") AS ?result) }";
-
-        try(final SelectQueryResult aResult = connection.select(aQuery).execute()) {
-
-            assertThat(aResult).hasNext().withFailMessage("Should have a result");
-            Optional<Literal> aPossibleLiteral = aResult.next().literal("result");
-            assertThat(aPossibleLiteral).isPresent();
-            assertThat(aPossibleLiteral.get().label()).isEqualTo("HELLO%20WORLD");
         }
     }
 }
