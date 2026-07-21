@@ -54,6 +54,18 @@ public final class HostCallbacks {
                                           final String method,
                                           final String argsSummary) {
         if (ctx == null) return;
+        // Deadline gate — checked first so a query already past its
+        // configured cap or an outer Stardog ExecutionMonitor that has
+        // already reported isCancelled() unwinds before the capability
+        // check / audit-row write / fuel toll fire. Throws
+        // WfBudgetError.DeadlineExceeded which rides the same catch/
+        // promotion path Call.evaluate + WebFunctionServiceOperator use
+        // for the other WfBudgetError variants (PerInvocationTrap,
+        // HostCallbackTollExhausted). No-op when neither the config cap
+        // nor an ExecutionMonitor is configured, so unconfigured
+        // deployments pay only a single volatile-field read + a
+        // System.nanoTime() call per dispatch.
+        ctx.checkDeadline(interfaceName + "." + method);
         final java.util.Optional<CapabilityEnforcer> enforcer = CapabilityEnforcer.activePolicy();
         if (enforcer.isEmpty()) return;
         final CapabilityGrant grant = ctx.capabilityGrant().orElse(null);

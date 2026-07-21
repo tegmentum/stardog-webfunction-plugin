@@ -40,6 +40,7 @@ import java.nio.charset.Charset;
     TestCache.class,
     TestCall.class,
     TestCallbackContext.class,
+    TestCallbackDeadline.class,
     TestCallbackContextAsk.class,
     TestCapabilityAsk.class,
     TestCapabilityAskStore.class,
