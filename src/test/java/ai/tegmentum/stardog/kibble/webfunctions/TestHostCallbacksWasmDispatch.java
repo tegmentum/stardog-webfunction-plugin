@@ -435,22 +435,116 @@ public class TestHostCallbacksWasmDispatch {
         assertThat(err.getCaseName()).isEqualTo("not-permitted");
     }
 
-    // ---- nesting-denied path ----------------------------------------
+    // ---- nesting-denied paths ---------------------------------------
 
     /**
-     * F4 tightening: MVP single-level nesting rule surfaces the
-     * dedicated {@code nesting-not-permitted} arm (was
-     * {@code not-permitted} pre-F4). Distinct from
-     * {@code not-permitted} (which stays for capability denial) so a
-     * guest can tell a substrate structural rule apart from a policy
-     * call.
+     * A two-level chain is permitted post multi-level extension —
+     * pre-multi-level this same fixture surfaced
+     * {@code nesting-not-permitted}. Confirms the depth cap default
+     * (8) leaves headroom for realistic composition chains.
      */
     @Test
-    public void nestedInvokeWasmService_deniedWithNestingNotPermitted() {
+    public void twoLevelChain_permitted() {
         final CallbackContext ctx = CallbackContext.bind(null, dictionary);
-        // Simulate being inside a callee's frame by bumping wasm-call depth
-        // as if the outer wasm-callbacks dispatch had already entered.
-        ctx.enterWasmCall();
+        // Prime as if we were one level deep already (the outer
+        // invoke-wasm dispatch had entered). Use a URL distinct from
+        // the callee under test so cycle detection is a no-op.
+        ctx.enterWasmCall("ipfs://QmRoot");
+        try {
+            final AtomicBoolean invokerCalled = new AtomicBoolean(false);
+            final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+                @Override
+                public <R> R invoke(final String url,
+                                    final MappingDictionary dict,
+                                    final String functionName,
+                                    final Value[] args,
+                                    final java.util.function.Function<SelectQueryResult, R> body)
+                        throws Exception {
+                    invokerCalled.set(true);
+                    try (SelectQueryResult rs = singleBindingResult("value_0",
+                            Values.literal("ok"))) {
+                        return body.apply(rs);
+                    }
+                }
+            };
+            final Object[] out = HostCallbacks.invokeWasmDispatch(
+                    new Object[] { ComponentVal.string("ipfs://QmDeeper"),
+                                   ComponentVal.list(Collections.emptyList()) },
+                    "invoke-wasm-service",
+                    HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
+                    mock);
+            assertThat(invokerCalled.get()).isTrue();
+            assertThat(((ComponentVal) out[0]).asResult().isOk()).isTrue();
+            // exitWasmCall inside dispatch popped the depth-2 entry;
+            // outer priming stays at depth 1.
+            assertThat(ctx.wasmCallDepth()).isEqualTo(1);
+        } finally {
+            ctx.exitWasmCall("ipfs://QmRoot");
+        }
+    }
+
+    /**
+     * Depth-cap rejection — a chain at the configured max depth
+     * refuses one more level with the {@code nesting-not-permitted}
+     * arm carrying the {@code depth-exceeded} reason.
+     */
+    @Test
+    public void depthCapExceeded_deniedWithNestingNotPermitted() {
+        System.setProperty(WebFunctionConfig.PROP_WASM_CALLBACKS_MAX_NESTING_DEPTH, "3");
+        try {
+            final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+            ctx.enterWasmCall("ipfs://QmA");
+            ctx.enterWasmCall("ipfs://QmB");
+            ctx.enterWasmCall("ipfs://QmC");
+            try {
+                final AtomicBoolean invokerCalled = new AtomicBoolean(false);
+                final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+                    @Override
+                    public <R> R invoke(final String url,
+                                        final MappingDictionary dict,
+                                        final String functionName,
+                                        final Value[] args,
+                                        final java.util.function.Function<SelectQueryResult, R> body) {
+                        invokerCalled.set(true);
+                        throw new IllegalStateException("should not have been called");
+                    }
+                };
+                final Object[] out = HostCallbacks.invokeWasmDispatch(
+                        new Object[] { ComponentVal.string("ipfs://QmD"),
+                                       ComponentVal.list(Collections.emptyList()) },
+                        "invoke-wasm-service",
+                        HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
+                        mock);
+                assertThat(invokerCalled.get()).isFalse();
+                final ComponentResult result = ((ComponentVal) out[0]).asResult();
+                assertThat(result.isErr()).isTrue();
+                final ComponentVariant err = result.getErr().orElseThrow().asVariant();
+                assertThat(err.getCaseName()).isEqualTo("nesting-not-permitted");
+                assertThat(err.getPayload().orElseThrow().asString())
+                        .contains("depth cap exceeded");
+                // Depth stays at the cap on rejection.
+                assertThat(ctx.wasmCallDepth()).isEqualTo(3);
+            } finally {
+                ctx.exitWasmCall("ipfs://QmC");
+                ctx.exitWasmCall("ipfs://QmB");
+                ctx.exitWasmCall("ipfs://QmA");
+            }
+        } finally {
+            System.clearProperty(WebFunctionConfig.PROP_WASM_CALLBACKS_MAX_NESTING_DEPTH);
+        }
+    }
+
+    /**
+     * Cycle rejection — a callee URL that already appears in the
+     * invocation chain surfaces the {@code nesting-not-permitted}
+     * arm carrying the {@code cycle-detected} reason. Root -> A -> A
+     * is the tightest cycle; also asserts a longer A -> B -> A cycle.
+     */
+    @Test
+    public void cycleDetected_deniedWithNestingNotPermitted() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        ctx.enterWasmCall("ipfs://QmA");
+        ctx.enterWasmCall("ipfs://QmB");
         try {
             final AtomicBoolean invokerCalled = new AtomicBoolean(false);
             final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
@@ -465,7 +559,7 @@ public class TestHostCallbacksWasmDispatch {
                 }
             };
             final Object[] out = HostCallbacks.invokeWasmDispatch(
-                    new Object[] { ComponentVal.string("ipfs://QmMock"),
+                    new Object[] { ComponentVal.string("ipfs://QmA"),
                                    ComponentVal.list(Collections.emptyList()) },
                     "invoke-wasm-service",
                     HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
@@ -476,9 +570,11 @@ public class TestHostCallbacksWasmDispatch {
             final ComponentVariant err = result.getErr().orElseThrow().asVariant();
             assertThat(err.getCaseName()).isEqualTo("nesting-not-permitted");
             assertThat(err.getPayload().orElseThrow().asString())
-                    .contains("nested wasm-callbacks");
+                    .contains("cycle detected")
+                    .contains("ipfs://QmA");
         } finally {
-            ctx.exitWasmCall();
+            ctx.exitWasmCall("ipfs://QmB");
+            ctx.exitWasmCall("ipfs://QmA");
         }
     }
 

@@ -860,9 +860,12 @@ public final class HostCallbacks {
      * (single-function callees still auto-discover for legacy callers
      * that leave the argument blank).
      *
-     * <p>Single-level nesting rule: rejects a call when the current
-     * frame is already inside a wasm-callbacks dispatch. See
-     * {@link #invokeWasmService} for the full error-mapping table.
+     * <p>Multi-level nesting rule: rejects a call when the current
+     * frame would exceed
+     * {@link WebFunctionConfig#wasmCallbacksMaxNestingDepth} (default 8)
+     * or when the callee URL already appears in the invocation chain
+     * (cycle). See {@link #invokeWasmService} for the full error-mapping
+     * table.
      */
     public static WitHostFunction invokeWasmV1() {
         return args -> invokeWasmDispatch(
@@ -885,12 +888,15 @@ public final class HostCallbacks {
      * resulting single-row {@code SelectQueryResult} as a
      * {@code list<binding>} return.
      *
-     * <p>Single-level nesting rule: rejects a call when the current
-     * frame is already inside a wasm-callbacks dispatch
-     * ({@link CallbackContext#wasmCallDepth} {@code >= 1}) with the
-     * F4 {@code nesting-not-permitted} arm — distinct from
-     * {@code not-permitted} (capability denial) so guests can tell a
-     * substrate structural rule apart from a policy call.
+     * <p>Multi-level nesting rule: rejects a call when the current
+     * frame would exceed
+     * {@link WebFunctionConfig#wasmCallbacksMaxNestingDepth} (default 8)
+     * OR when the callee URL already appears in the current invocation
+     * chain (cycle). Both cases surface the F4 {@code nesting-not-permitted}
+     * arm — distinct from {@code not-permitted} (capability denial) so
+     * guests can tell a substrate structural rule apart from a policy
+     * call. The reason discriminator ({@code depth-exceeded} vs
+     * {@code cycle-detected}) is folded into the payload string.
      */
     public static WitHostFunction invokeWasmService() {
         return args -> invokeWasmDispatch(
@@ -989,10 +995,13 @@ public final class HostCallbacks {
      *       allowlist. These duplicate what the host function factories run
      *       for the real dispatch path; the tests drive this method directly
      *       and rely on the checks here to fire.</li>
-     *   <li>Nesting-depth guard — {@code ctx.wasmCallDepth() >= 1} means the
-     *       caller is a callee itself; MVP rejects. Uses the F4
-     *       {@code nesting-not-permitted} arm — distinct from
-     *       {@code not-permitted} (which stays for capability denial).</li>
+     *   <li>Nesting-depth + cycle guard — enforced inside
+     *       {@link CallbackContext#enterWasmCall(String)}. Rejects when the
+     *       depth cap ({@link WebFunctionConfig#wasmCallbacksMaxNestingDepth},
+     *       default 8) is exceeded or the callee URL already appears in
+     *       the invocation chain. Both cases surface the F4
+     *       {@code nesting-not-permitted} arm (distinct reason
+     *       discriminators folded into the payload string).</li>
      *   <li>Load callee + marshal args → invoke {@code evaluate} →
      *       encode result. Errors are mapped to the closest existing
      *       wasm-call-error arm.</li>
@@ -1072,21 +1081,20 @@ public final class HostCallbacks {
                 + "CallbackContext — bind with bind(dictionary) at the top of the "
                 + "wf:call frame")) };
         }
-        // Nesting-depth guard — MVP single-level rule. F4 tightening:
-        // maps to the dedicated `nesting-not-permitted` arm rather than
-        // the generic `not-permitted` (which stays reserved for
-        // capability denial). Guests can now discriminate a substrate
-        // structural rule from a policy call.
-        if (ctx.wasmCallDepth() >= 1) {
-            return new Object[] { ComponentVal.err(wasmCallError("nesting-not-permitted",
-                method + ": nested wasm-callbacks invocation not permitted — "
-                + "single-level nesting only (MVP; full recursion is future work).")) };
-        }
+        // Nesting-depth + cycle guard — multi-level extension (Task 279+).
+        // Both checks live inside CallbackContext.enterWasmCall(url),
+        // called from invokeWasmDispatchInner in a try/catch that maps
+        // WasmNestingException to the F4 `nesting-not-permitted` arm.
+        // Pre-multi-level the check was a bare `wasmCallDepth() >= 1`
+        // here; now depth capping is bounded by
+        // WebFunctionConfig.wasmCallbacksMaxNestingDepth (default 8) and
+        // cycle detection surfaces the same arm with a distinct reason.
         return executeAsInvoker(ctx, "wasm-callbacks", method, url, () ->
-            invokeWasmDispatchInner(ctx, url, functionNameOrNull, argsListVal, returnShape, invoker));
+            invokeWasmDispatchInner(ctx, method, url, functionNameOrNull, argsListVal, returnShape, invoker));
     }
 
     private static Object[] invokeWasmDispatchInner(final CallbackContext ctx,
+                                                    final String method,
                                                     final String url,
                                                     final String functionNameOrNull,
                                                     final ComponentVal argsListVal,
@@ -1109,7 +1117,19 @@ public final class HostCallbacks {
         // Deferred fuel reflection lives in the finally block below.
         final ai.tegmentum.webassembly4j.api.ComponentInstance callerInstance =
                 ctx.componentInstanceOrNull();
-        ctx.enterWasmCall();
+        // Nesting-depth + cycle guard — CallbackContext.enterWasmCall(url)
+        // validates the depth cap and cycle rules before appending the
+        // callee to the chain. WasmNestingException carries a reason
+        // discriminator (depth-exceeded / cycle-detected) that we fold
+        // into the message so a guest catching the callback can tell
+        // one structural rule from the other. Rejection is a pre-entry
+        // failure — no fuel reflection or exitWasmCall pairing needed.
+        try {
+            ctx.enterWasmCall(url);
+        } catch (CallbackContext.WasmNestingException nesting) {
+            return new Object[] { ComponentVal.err(wasmCallError("nesting-not-permitted",
+                method + ": " + nesting.getMessage())) };
+        }
         // Outer try/catch pairs with the reflect-fuel path — the finally
         // block calls reflectCalleeFuelAndRestoreCaller, which may throw
         // WfBudgetError.HostCallbackTollExhausted when the reflected
@@ -1199,7 +1219,7 @@ public final class HostCallbacks {
             // Restore caller's ComponentInstance and reflect callee's
             // fuel consumption back into the caller's budget (Phase-N4).
             reflectCalleeFuelAndRestoreCaller(ctx, callerInstance);
-            ctx.exitWasmCall();
+            ctx.exitWasmCall(url);
         }
         } catch (WfBudgetError.HostCallbackTollExhausted fuelExhausted) {
             // F4 tightening: the reflect step (invoked from the inner
