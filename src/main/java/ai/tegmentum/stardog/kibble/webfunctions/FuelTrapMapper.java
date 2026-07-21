@@ -19,6 +19,13 @@ package ai.tegmentum.stardog.kibble.webfunctions;
  *       is checked: when set, the trap is promoted to
  *       {@link WfBudgetError.HostCallbackTollExhausted}; otherwise it is
  *       promoted to {@link WfBudgetError.PerInvocationTrap}.</li>
+ *   <li>Task 303 T5 — if a wasmtime {@code INTERRUPT} trap (epoch
+ *       interruption) appears anywhere in the cause chain, promote to
+ *       {@link WfBudgetError.DeadlineExceeded} with the elapsed millis
+ *       + configured cap for attribution. Fires when a pure-compute
+ *       wasm loop with no host re-entry runs past the configured
+ *       execution deadline; complements the cooperative check at
+ *       {@link CallbackContext#checkDeadline(String)}.</li>
  *   <li>Otherwise, {@code null} is returned — the caller preserves the
  *       original error path.</li>
  * </ul>
@@ -46,6 +53,34 @@ final class FuelTrapMapper {
             }
             cur = cur.getCause();
             hops++;
+        }
+
+        // Task 303 T5 — wasm-level epoch interrupt promotion. Independent
+        // of fuel.enabled since the deadline surface (webfunctions.exec.max.millis)
+        // is a plugin-side execution cap orthogonal to the commercial fuel
+        // metering. Checked before the fuel-only OUT_OF_FUEL branch below
+        // so a store that has both fuel and epoch enabled and traps on
+        // interrupt (deadline) does not get misreported as OUT_OF_FUEL —
+        // the two trap types are mutually exclusive from wasmtime's side
+        // but the message check for OUT_OF_FUEL happens to match some
+        // shared prefix layouts, so the INTERRUPT check takes priority.
+        if (hasInterruptTrap(thrown)) {
+            final String extensionUri = ctx == null ? "" : ctx.extensionUri();
+            // Elapsed since bind is the honest wall-clock reading; the
+            // ticker's tick interval is a strict lower bound on the
+            // over-shoot (up to one tick past the deadline before the
+            // wasm frame reaches its next safepoint). deadlineMillis is
+            // the operator-configured cap (0 when unset — same 0 the
+            // monitor-side path uses so downstream JSON parsing can key
+            // off {@code source: "config"} vs a live-set 0 elapsed).
+            final long elapsed = ctx == null ? -1L : ctx.elapsedMillisSinceBind();
+            final long deadlineMs = WebFunctionConfig.execMaxMillis().orElse(0L);
+            return new WfBudgetError.DeadlineExceeded(
+                    extensionUri,
+                    /* callbackName */ "",
+                    elapsed < 0L ? 0L : elapsed,
+                    deadlineMs,
+                    WfBudgetError.DeadlineExceeded.SOURCE_CONFIG);
         }
 
         if (!WebFunctionConfig.fuelEnabled()) {
@@ -80,6 +115,57 @@ final class FuelTrapMapper {
                     cap);
         }
         return null;
+    }
+
+    /**
+     * True when any cause in the chain (up to a reasonable depth) is a
+     * wasmtime4j {@code TrapException} whose {@code TrapType} matches
+     * INTERRUPT (epoch deadline reached, or timeout callback fired).
+     * Mirrors {@link #hasOutOfFuelTrap} in structure so an operator
+     * looking at the two mapping branches sees them as symmetric.
+     */
+    private static boolean hasInterruptTrap(final Throwable thrown) {
+        Throwable cur = thrown;
+        int hops = 0;
+        while (cur != null && hops < 16) {
+            if (isInterruptTrap(cur)) return true;
+            cur = cur.getCause();
+            hops++;
+        }
+        return false;
+    }
+
+    private static boolean isInterruptTrap(final Throwable t) {
+        // Fast path: the wasmtime4j TrapException message shape embeds the
+        // trap type as a {@code [TRAP_TYPE] wasm trap: description} prefix.
+        // INTERRUPT's stock description is "Execution interrupted (timeout
+        // or cancellation)"; wasmtime itself surfaces {@code "wasm trap:
+        // interrupt"} in its unqualified form. Check both.
+        final String msg = t.getMessage();
+        if (msg != null) {
+            if (msg.contains("[INTERRUPT]")) return true;
+            // Wasmtime's raw trap text for epoch interruption; matches
+            // both {@code "wasm trap: interrupt"} and the wasmtime4j
+            // wrapped {@code "Execution interrupted"} variants.
+            if (msg.contains("wasm trap: interrupt")) return true;
+            if (msg.contains("Execution interrupted")) return true;
+        }
+
+        // Fall back to reflectively checking wasmtime4j's TrapType enum.
+        // Classpath-sensitive; the string check above is the common case.
+        try {
+            final Class<?> nativeTrapClass = Class.forName(
+                    "ai.tegmentum.wasmtime4j.exception.TrapException");
+            if (nativeTrapClass.isInstance(t)) {
+                final Object trapType = nativeTrapClass
+                        .getMethod("getTrapType").invoke(t);
+                return trapType != null && "INTERRUPT".equals(trapType.toString());
+            }
+        } catch (ReflectiveOperationException ignore) {
+            // wasmtime4j not on classpath in this JVM — nothing we can do
+            // here; the string check above is our fallback.
+        }
+        return false;
     }
 
     /**
