@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * wasm-callbacks dispatch unit tests — Phase-N5 companion to the
@@ -783,6 +784,195 @@ public class TestHostCallbacksWasmDispatch {
                 HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
                 mock);
         // finally-block ran → depth restored to 0.
+        assertThat(ctx.wasmCallDepth()).isEqualTo(0);
+    }
+
+    // ---- typed-error propagation on nested-wasm paths ----------------
+    //
+    // Regression coverage for the pre-existing swallow bug: the generic
+    // `catch (Exception e)` in invokeWasmDispatchInner previously turned
+    // every callee-thrown WfBudgetError / WfCapabilityError variant that
+    // lacked a dedicated WIT arm into an `invocation-error` wrap, so the
+    // outer wf:call catch surface (Call.evaluate /
+    // WebFunctionServiceOperator.computeNext) never saw the typed
+    // variant. FuelTrapMapper's instanceof-driven promotion needs the
+    // typed object to promote to a typed SPARQL error; the wrapped
+    // string stripped that discriminator. Fix: rethrow WfBudgetError and
+    // WfCapabilityError before the generic catch.
+    //
+    // A→B chain shape: the dispatch under test IS the "A" wf:call
+    // frame's invoke-wasm to callee "B"; when B's evaluate raises a
+    // typed error, that error must reach A's catch site (i.e. escape
+    // invokeWasmDispatch) instead of being wrapped in a WIT err.
+
+    /**
+     * Deep-chain deadline trip: the callee's evaluation reached a
+     * host-callback boundary that fired {@link WfBudgetError.DeadlineExceeded}
+     * (configured cap exceeded or outer ExecutionMonitor cancellation).
+     * The typed variant carries a machine-parseable JSON payload —
+     * error_code, source, elapsed_millis, deadline_millis — that audit
+     * tooling and clients depend on; pre-fix the generic catch stripped
+     * it to `invocation-error: callee trap: <human message>`. Assert
+     * the variant reaches the outer catch surface unwrapped.
+     */
+    @Test
+    public void calleeThrowsWfBudgetErrorDeadlineExceeded_propagatesTyped() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body) {
+                throw new WfBudgetError.DeadlineExceeded(
+                        "ipfs://QmCallee", "graph-callbacks.execute-query",
+                        1500L, 1000L, WfBudgetError.DeadlineExceeded.SOURCE_CONFIG);
+            }
+        };
+        assertThatThrownBy(() -> HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm-service",
+                HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
+                mock))
+                .isInstanceOf(WfBudgetError.DeadlineExceeded.class)
+                .hasMessageContaining("WF_DEADLINE_EXCEEDED");
+        // Finally block still ran — depth restored, no leak.
+        assertThat(ctx.wasmCallDepth()).isEqualTo(0);
+    }
+
+    /**
+     * Deep-chain per-invocation fuel trap. Same propagation contract:
+     * the typed variant reaches the outer catch surface so
+     * FuelTrapMapper can promote to a typed SPARQL error with
+     * extension URI + fuel-consumed accounting intact.
+     */
+    @Test
+    public void calleeThrowsWfBudgetErrorPerInvocationTrap_propagatesTyped() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body) {
+                throw new WfBudgetError.PerInvocationTrap(
+                        "ipfs://QmCallee", 500L, 500L);
+            }
+        };
+        assertThatThrownBy(() -> HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm-service",
+                HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
+                mock))
+                .isInstanceOf(WfBudgetError.PerInvocationTrap.class)
+                .hasMessageContaining("WF_PER_INVOCATION_TRAP");
+        assertThat(ctx.wasmCallDepth()).isEqualTo(0);
+    }
+
+    /**
+     * Deep-chain load-time capability denial (e.g. nested callee's
+     * required interface isn't in the effective grant). Typed variant
+     * carries the missing_interface + resolution_stage + policy_source
+     * discriminators; pre-fix these were lost to the string wrap.
+     */
+    @Test
+    public void calleeThrowsWfCapabilityErrorLoadTimeDenied_propagatesTyped() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body) {
+                throw new WfCapabilityError.LoadTimeDenied(
+                        "ipfs://QmCallee", "graph-callbacks", "policy",
+                        "alice", "test-policy");
+            }
+        };
+        assertThatThrownBy(() -> HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm-service",
+                HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
+                mock))
+                .isInstanceOf(WfCapabilityError.LoadTimeDenied.class)
+                .hasMessageContaining("WF_CAPABILITY_DENIED_AT_LOAD");
+        assertThat(ctx.wasmCallDepth()).isEqualTo(0);
+    }
+
+    /**
+     * Deep-chain unknown-extension denial from a nested capability
+     * resolution. Same propagation contract — audit tooling groups on
+     * policy_source, which lives on the typed object rather than the
+     * human message.
+     */
+    @Test
+    public void calleeThrowsWfCapabilityErrorUnknownExtension_propagatesTyped() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body) {
+                throw new WfCapabilityError.UnknownExtension(
+                        "ipfs://QmCallee", "alice",
+                        "unknown-extension-policy=deny");
+            }
+        };
+        assertThatThrownBy(() -> HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm-service",
+                HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
+                mock))
+                .isInstanceOf(WfCapabilityError.UnknownExtension.class)
+                .hasMessageContaining("WF_CAPABILITY_UNKNOWN_EXTENSION");
+        assertThat(ctx.wasmCallDepth()).isEqualTo(0);
+    }
+
+    /**
+     * Regression protection for the generic-catch behavior: a plain
+     * {@link RuntimeException} from the callee must still be wrapped
+     * as {@code invocation-error} rather than propagating out — the fix
+     * targets ONLY the typed WfBudgetError / WfCapabilityError sealed
+     * hierarchies, not every {@link RuntimeException}. The existing
+     * {@link #calleeThrowsIOException_mapsToInvocationError} covers the
+     * IOException arm; this test complements it for the raw
+     * RuntimeException path.
+     */
+    @Test
+    public void calleeThrowsGenericRuntimeException_stillMapsToInvocationError() {
+        final CallbackContext ctx = CallbackContext.bind(null, dictionary);
+        final HostCallbacks.CalleeInvoker mock = new HostCallbacks.CalleeInvoker() {
+            @Override
+            public <R> R invoke(final String url,
+                                final MappingDictionary dict,
+                                final String functionName,
+                                final Value[] args,
+                                final java.util.function.Function<SelectQueryResult, R> body) {
+                throw new RuntimeException("generic callee trap");
+            }
+        };
+        final Object[] out = HostCallbacks.invokeWasmDispatch(
+                new Object[] { ComponentVal.string("ipfs://QmMock"),
+                               ComponentVal.list(Collections.emptyList()) },
+                "invoke-wasm-service",
+                HostCallbacks.CalleeReturnShape.LIST_OF_BINDING,
+                mock);
+        final ComponentResult result = ((ComponentVal) out[0]).asResult();
+        assertThat(result.isErr()).isTrue();
+        final ComponentVariant err = result.getErr().orElseThrow().asVariant();
+        assertThat(err.getCaseName()).isEqualTo("invocation-error");
+        assertThat(err.getPayload().orElseThrow().asString())
+                .contains("callee trap")
+                .contains("generic callee trap");
         assertThat(ctx.wasmCallDepth()).isEqualTo(0);
     }
 
