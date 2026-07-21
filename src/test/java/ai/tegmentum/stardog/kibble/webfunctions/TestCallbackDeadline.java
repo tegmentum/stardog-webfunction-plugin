@@ -121,4 +121,70 @@ public class TestCallbackDeadline {
                 "", "", 0L, 0L, WfBudgetError.DeadlineExceeded.SOURCE_MONITOR);
         assertThat((WfBudgetError) de).isInstanceOf(WfBudgetError.class);
     }
+
+    /**
+     * Multi-level nesting inherits the root deadline through the shared
+     * ThreadLocal — a chain A → B → C at depth 3 where B "sleeps" past
+     * the cap causes C's next dispatch to see DeadlineExceeded.
+     *
+     * <p>Simulates the invoke-wasm chain semantics: {@link
+     * CallbackContext#bind()} on the outer frame captures the deadline;
+     * the nested {@link CallbackContext#enterWasmCall(String)} calls do
+     * NOT reset it, so C's checkDeadline sees the same stamp A saw.
+     */
+    @Test
+    public void multiLevelNestingInheritsRootDeadline() throws InterruptedException {
+        System.setProperty(WebFunctionConfig.PROP_MAX_EXEC_MILLIS, "50");
+        final CallbackContext root = CallbackContext.bind();
+        assertThat(root.deadlineMillisIfConfigured()).isEqualTo(OptionalLong.of(50L));
+
+        // Depth 1: A dispatches into B via invoke-wasm.
+        root.enterWasmCall("ipfs://A");
+        // The nested wasm-callbacks dispatch reuses the same CallbackContext
+        // (the ThreadLocal is not rebound on nested entry — see
+        // CallbackContext.bind(): "if (existing != null && existing.depth > 0)
+        // return existing"). Verify B sees the same stamp.
+        final CallbackContext atB = CallbackContext.current();
+        assertThat(atB).isSameAs(root);
+        assertThat(atB.deadlineMillisIfConfigured()).isEqualTo(OptionalLong.of(50L));
+
+        // Depth 2: B dispatches into C.
+        root.enterWasmCall("ipfs://B");
+        final CallbackContext atC = CallbackContext.current();
+        assertThat(atC).isSameAs(root);
+
+        // B "sleeps" past the cap (simulating a slow host callback or
+        // downstream network call within B's evaluate).
+        Thread.sleep(80L);
+
+        // C's very next host-callback dispatch trips the deadline. Since
+        // the stamp was captured at root bind, C sees the same absolute
+        // deadline A would have seen — the deepest nested frame doesn't
+        // get a fresh timer.
+        final Throwable trip = catchThrowable(() -> atC.checkDeadline("depth3.callback"));
+        assertThat(trip).isInstanceOf(WfBudgetError.DeadlineExceeded.class);
+        final WfBudgetError.DeadlineExceeded de = (WfBudgetError.DeadlineExceeded) trip;
+        assertThat(de.source()).isEqualTo(WfBudgetError.DeadlineExceeded.SOURCE_CONFIG);
+        assertThat(de.callbackName()).isEqualTo("depth3.callback");
+        assertThat(de.elapsedMillis()).isGreaterThanOrEqualTo(50L);
+    }
+
+    /**
+     * Non-nested control — a fresh bind on a thread whose prior context
+     * was cleared gets a fresh deadline (no leak across query invocations).
+     */
+    @Test
+    public void freshBindGetsFreshDeadline() throws InterruptedException {
+        System.setProperty(WebFunctionConfig.PROP_MAX_EXEC_MILLIS, "50");
+        final CallbackContext first = CallbackContext.bind();
+        Thread.sleep(30L);
+        CallbackContext.unbindIfOutermost(first);
+
+        final CallbackContext second = CallbackContext.bind();
+        // First's elapsed was ~30ms; second's should reset. checkDeadline
+        // immediately after bind must not trip even though 30ms of the
+        // 50ms budget already elapsed under the previous binding.
+        second.checkDeadline("host.follow-predicate");
+        assertThat(second.elapsedMillisSinceBind()).isLessThan(50L);
+    }
 }
