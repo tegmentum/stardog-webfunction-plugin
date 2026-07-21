@@ -26,6 +26,23 @@ public final class WebFunctionConfig {
     public static final String PROP_CALLBACK_MAX_ROWS  = "webfunctions.callback.max.rows";
     public static final String PROP_CALLBACK_ENABLED   = "webfunctions.callback.enabled";
 
+    // Task 303 T5 — wasm-level deadline interruption via wasmtime's epoch
+    // interruption. The cooperative deadline check landed in Task 302 fires
+    // only at host-callback boundaries, so pure-compute wasm loops with no
+    // host re-entry are not interrupted. Epoch interruption closes that gap:
+    // a shared ticker calls {@code engine.incrementEpoch()} every
+    // {@code webfunctions.epoch.tick-millis} milliseconds; each component
+    // instance is configured with an epoch deadline in ticks derived from
+    // {@link #PROP_MAX_EXEC_MILLIS}, so wasmtime traps ({@code TrapType.INTERRUPT})
+    // when the store's epoch exceeds the deadline.
+    //
+    // Default 100 ms — 10 checks/sec, low overhead. Operators can tune down
+    // for tighter deadlines or up for less thread-scheduling noise. Values
+    // ≤ 0 fall back to the default.
+    public static final String PROP_EPOCH_TICK_MILLIS = "webfunctions.epoch.tick-millis";
+
+    public static final long DEFAULT_EPOCH_TICK_MILLIS = 100L;
+
     public static final int DEFAULT_CALLBACK_MAX_DEPTH = 100;
     public static final int DEFAULT_CALLBACK_MAX_ROWS  = 100_000;
 
@@ -297,6 +314,55 @@ public final class WebFunctionConfig {
      */
     public static OptionalLong execMaxMillis() {
         return getLong(PROP_MAX_EXEC_MILLIS);
+    }
+
+    /**
+     * Ticker interval in milliseconds for wasmtime epoch interruption. The
+     * shared {@link EpochTicker} calls {@code engine.incrementEpoch()} once
+     * per interval; each {@link StardogWasmInstance} carries a per-component
+     * epoch deadline in ticks (derived from {@link #PROP_MAX_EXEC_MILLIS} /
+     * this value) so wasmtime traps pure-compute wasm frames when the
+     * store's epoch exceeds the deadline.
+     *
+     * <p>Default {@link #DEFAULT_EPOCH_TICK_MILLIS} ({@code 100} ms). Values
+     * {@code ≤ 0} fall back to the default (rather than silently disabling
+     * the ticker altogether — an operator that wants a tight budget
+     * configures {@code 10}, not {@code 0}). Values greater than
+     * {@link Long#MAX_VALUE} are impossible via the parser (it uses
+     * {@link Long#parseLong}); anything ≥ {@code Integer.MAX_VALUE} still
+     * works because {@link EpochTicker} treats the argument as a
+     * {@code long}.
+     */
+    public static long epochTickMillis() {
+        final long raw = getLong(PROP_EPOCH_TICK_MILLIS).orElse(DEFAULT_EPOCH_TICK_MILLIS);
+        return raw <= 0L ? DEFAULT_EPOCH_TICK_MILLIS : raw;
+    }
+
+    /**
+     * Compute the per-component epoch deadline in ticks: the ceiling of
+     * {@code maxExecMillis / epochTickMillis}. Returns an empty
+     * {@link OptionalLong} when {@link #PROP_MAX_EXEC_MILLIS} is unset —
+     * the plugin then does not set an epoch deadline on the component
+     * instance and pure-compute wasm frames run to completion (fuel-cap
+     * only). At least 1 tick is returned when the config is set (a
+     * cap smaller than one tick still gets one tick of grace so the
+     * ticker's first cycle can trip it).
+     *
+     * <p>Called from {@link WebFunctionConfig#componentConfigFromSystemProperties()}
+     * on each instantiation so a live config change (via
+     * {@link System#setProperty}) applies to the next instance.
+     */
+    public static OptionalLong epochDeadlineTicks() {
+        final OptionalLong maxExecMs = execMaxMillis();
+        if (maxExecMs.isEmpty()) return OptionalLong.empty();
+        final long ms = maxExecMs.getAsLong();
+        if (ms <= 0L) return OptionalLong.empty();
+        final long tick = epochTickMillis();
+        // ceil(ms / tick) without overflow — ms and tick are both bounded
+        // by realistic operator values (millis; ticks default 100). Guard
+        // pathological configs anyway.
+        final long ticks = Math.max(1L, (ms + tick - 1L) / tick);
+        return OptionalLong.of(ticks);
     }
 
     public static int callbackMaxDepth() {
