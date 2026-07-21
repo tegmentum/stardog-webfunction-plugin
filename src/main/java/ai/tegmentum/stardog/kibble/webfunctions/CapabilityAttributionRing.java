@@ -156,12 +156,31 @@ public final class CapabilityAttributionRing {
     /**
      * Record a {@link CapabilityAuditRow.Outcome#GRANTED} outcome.
      * Convenience wrapper — no-op when the ring is disabled.
+     * callChain defaults to empty; wasm-callbacks dispatches use the
+     * 6-arg overload to carry the invocation chain.
      */
     public static void recordGranted(final String userId,
                                      final String extensionUri,
                                      final String interfaceName,
                                      final String method,
                                      final String argumentsSummary) {
+        recordGranted(userId, extensionUri, interfaceName, method,
+                argumentsSummary, java.util.Collections.emptyList());
+    }
+
+    /**
+     * Multi-level-aware {@link CapabilityAuditRow.Outcome#GRANTED}
+     * variant — wasm-callbacks dispatches call this with the current
+     * {@link CallbackContext#wasmCallChainSnapshot} so operators can
+     * trace the full path root → deepest callee. Non-wasm-callbacks
+     * paths use the 5-arg overload which passes an empty chain.
+     */
+    public static void recordGranted(final String userId,
+                                     final String extensionUri,
+                                     final String interfaceName,
+                                     final String method,
+                                     final String argumentsSummary,
+                                     final java.util.List<String> callChain) {
         if (!INSTANCE.enabled.get()) return;
         INSTANCE.append(new CapabilityAuditRow(
                 Instant.now(),
@@ -172,7 +191,8 @@ public final class CapabilityAttributionRing {
                 nonNull(method),
                 nonNull(argumentsSummary),
                 CapabilityAuditRow.Outcome.GRANTED,
-                ""));
+                "",
+                callChain));
     }
 
     /**
@@ -188,6 +208,21 @@ public final class CapabilityAttributionRing {
                                                final String interfaceName,
                                                final String method,
                                                final String argumentsSummary) {
+        recordGrantedUndeclared(userId, extensionUri, interfaceName, method,
+                argumentsSummary, java.util.Collections.emptyList());
+    }
+
+    /**
+     * Multi-level-aware {@link CapabilityAuditRow.Outcome#GRANTED_UNDECLARED}
+     * variant. See {@link #recordGranted(String, String, String, String, String, java.util.List)}
+     * for the chain-propagation rationale.
+     */
+    public static void recordGrantedUndeclared(final String userId,
+                                               final String extensionUri,
+                                               final String interfaceName,
+                                               final String method,
+                                               final String argumentsSummary,
+                                               final java.util.List<String> callChain) {
         if (!INSTANCE.enabled.get()) return;
         INSTANCE.append(new CapabilityAuditRow(
                 Instant.now(),
@@ -198,7 +233,8 @@ public final class CapabilityAttributionRing {
                 nonNull(method),
                 nonNull(argumentsSummary),
                 CapabilityAuditRow.Outcome.GRANTED_UNDECLARED,
-                ""));
+                "",
+                callChain));
     }
 
     /**
@@ -212,6 +248,22 @@ public final class CapabilityAttributionRing {
                                     final String method,
                                     final String argumentsSummary,
                                     final String denyReason) {
+        recordDenied(userId, extensionUri, interfaceName, method,
+                argumentsSummary, denyReason, java.util.Collections.emptyList());
+    }
+
+    /**
+     * Multi-level-aware {@link CapabilityAuditRow.Outcome#DENIED}
+     * variant. See {@link #recordGranted(String, String, String, String, String, java.util.List)}
+     * for the chain-propagation rationale.
+     */
+    public static void recordDenied(final String userId,
+                                    final String extensionUri,
+                                    final String interfaceName,
+                                    final String method,
+                                    final String argumentsSummary,
+                                    final String denyReason,
+                                    final java.util.List<String> callChain) {
         if (!INSTANCE.enabled.get()) return;
         INSTANCE.append(new CapabilityAuditRow(
                 Instant.now(),
@@ -222,7 +274,8 @@ public final class CapabilityAttributionRing {
                 nonNull(method),
                 nonNull(argumentsSummary),
                 CapabilityAuditRow.Outcome.DENIED,
-                nonNull(denyReason)));
+                nonNull(denyReason),
+                callChain));
     }
 
     private static String nonNull(final String s) {

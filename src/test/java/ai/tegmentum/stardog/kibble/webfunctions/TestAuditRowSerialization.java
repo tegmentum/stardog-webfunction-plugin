@@ -3,6 +3,9 @@ package ai.tegmentum.stardog.kibble.webfunctions;
 import org.junit.Test;
 
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -103,6 +106,83 @@ public class TestAuditRowSerialization {
         assertThat(line).contains("\\\\slash");  // \
         assertThat(line).contains("\\there");    // \t
         assertThat(line).contains("\\nbreak");   // \n
+    }
+
+    /**
+     * The pre-multi-level 9-arg constructor coerces {@code callChain}
+     * to an empty list — audit consumers get a stable JSON shape
+     * (always includes {@code "callChain":[]}) rather than a missing
+     * field they'd have to special-case.
+     */
+    @Test
+    public void capabilityRowLegacyConstructorEmitsEmptyChain() {
+        final CapabilityAuditRow row = new CapabilityAuditRow(
+                Instant.parse("2026-07-21T00:00:00Z"),
+                "alice", "acme", "file:///x.wasm",
+                "graph-callbacks", "execute-query", "",
+                CapabilityAuditRow.Outcome.GRANTED, "");
+        assertThat(row.callChain()).isEmpty();
+        assertThat(row.toNdjsonLine()).contains("\"callChain\":[]");
+    }
+
+    /**
+     * The multi-level canonical constructor round-trips a populated
+     * chain into the NDJSON output as a JSON array. Ensures operator
+     * tooling that filters by chain root or by chain member has a
+     * stable structural shape to key on.
+     */
+    @Test
+    public void capabilityRowMultiLevelChainSerializes() {
+        final List<String> chain = Arrays.asList(
+                "ipfs://QmRoot", "ipfs://QmMiddle", "ipfs://QmDeepest");
+        final CapabilityAuditRow row = new CapabilityAuditRow(
+                Instant.parse("2026-07-21T00:00:00Z"),
+                "alice", "acme", "ipfs://QmDeepest",
+                "graph-callbacks", "execute-query", "",
+                CapabilityAuditRow.Outcome.GRANTED, "",
+                chain);
+        assertThat(row.callChain()).containsExactly(
+                "ipfs://QmRoot", "ipfs://QmMiddle", "ipfs://QmDeepest");
+        final String line = row.toNdjsonLine();
+        assertThat(line).contains("\"callChain\":[\"ipfs://QmRoot\",\"ipfs://QmMiddle\",\"ipfs://QmDeepest\"]");
+    }
+
+    /**
+     * A null-passed chain coerces to an empty list rather than
+     * throwing — the field is optional in the shape, and coercion
+     * keeps 5-arg helper callers (which may not care about chain)
+     * from ever crashing the audit path.
+     */
+    @Test
+    public void capabilityRowNullChainCoercedToEmpty() {
+        final CapabilityAuditRow row = new CapabilityAuditRow(
+                Instant.parse("2026-07-21T00:00:00Z"),
+                "alice", "acme", "file:///x.wasm",
+                "wasm-callbacks", "invoke-wasm", "",
+                CapabilityAuditRow.Outcome.GRANTED, "",
+                null);
+        assertThat(row.callChain()).isEmpty();
+    }
+
+    /**
+     * The immutable-list copy in the compact constructor prevents a
+     * caller from mutating the row's chain after append. Guarantees
+     * downstream audit consumers see a stable snapshot even if the
+     * caller reuses its input list.
+     */
+    @Test
+    public void capabilityRowChainIsDefensivelyCopied() {
+        final java.util.ArrayList<String> mutable = new java.util.ArrayList<>();
+        mutable.add("ipfs://QmA");
+        final CapabilityAuditRow row = new CapabilityAuditRow(
+                Instant.parse("2026-07-21T00:00:00Z"),
+                "alice", "acme", "file:///x.wasm",
+                "wasm-callbacks", "invoke-wasm", "",
+                CapabilityAuditRow.Outcome.GRANTED, "",
+                mutable);
+        mutable.add("ipfs://QmB");
+        // Row still shows the original snapshot.
+        assertThat(row.callChain()).containsExactly("ipfs://QmA");
     }
 
     /**

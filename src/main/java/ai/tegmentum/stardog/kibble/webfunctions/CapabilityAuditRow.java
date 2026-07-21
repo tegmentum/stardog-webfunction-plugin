@@ -1,6 +1,8 @@
 package ai.tegmentum.stardog.kibble.webfunctions;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -42,6 +44,14 @@ import java.util.Objects;
  * @param denyReason       Short discriminator when {@link Outcome#DENIED} —
  *                         mirrors {@link WfCapabilityError.PerCallDenied#REASON_HOST_DENIED}
  *                         etc. Empty when {@link Outcome#GRANTED}.
+ * @param callChain        wasm-callbacks invocation chain snapshot at
+ *                         the moment this row was appended, ordered
+ *                         root → deepest. Empty for non-wasm-callbacks
+ *                         dispatches and for the pre-multi-level shape
+ *                         retained via the 9-arg convenience
+ *                         constructor. See
+ *                         {@link CallbackContext#wasmCallChainSnapshot}
+ *                         for the source-of-truth.
  */
 public record CapabilityAuditRow(
         Instant timestamp,
@@ -52,8 +62,29 @@ public record CapabilityAuditRow(
         String method,
         String argumentsSummary,
         Outcome outcome,
-        String denyReason
+        String denyReason,
+        List<String> callChain
 ) implements AuditRow {
+
+    /**
+     * Backward-compatible 9-arg constructor — pre-multi-level call
+     * sites that don't carry a chain default {@link #callChain} to
+     * the empty list. Additive to the multi-level canonical
+     * constructor so existing tests and callers keep compiling.
+     */
+    public CapabilityAuditRow(
+            final Instant timestamp,
+            final String userId,
+            final String orgId,
+            final String extensionUri,
+            final String interfaceName,
+            final String method,
+            final String argumentsSummary,
+            final Outcome outcome,
+            final String denyReason) {
+        this(timestamp, userId, orgId, extensionUri, interfaceName, method,
+             argumentsSummary, outcome, denyReason, Collections.emptyList());
+    }
 
     /**
      * NDJSON serialization for the Phase 6 disk sink. Field order is stable
@@ -83,7 +114,17 @@ public record CapabilityAuditRow(
         AuditRow.escapeJson(outcome.name(), b);
         b.append(",\"denyReason\":");
         AuditRow.escapeJson(denyReason, b);
-        b.append('}');
+        // callChain lands as a JSON array so downstream tooling can
+        // scan it structurally. Always emitted (even when empty) to
+        // keep the field set uniform across rows — operator alerting
+        // that keys on "callChain":[...] presence otherwise has to
+        // special-case the pre-multi-level shape.
+        b.append(",\"callChain\":[");
+        for (int i = 0; i < callChain.size(); i++) {
+            if (i > 0) b.append(',');
+            AuditRow.escapeJson(callChain.get(i), b);
+        }
+        b.append("]}");
         return b.toString();
     }
 
@@ -134,5 +175,11 @@ public record CapabilityAuditRow(
         Objects.requireNonNull(argumentsSummary, "argumentsSummary");
         Objects.requireNonNull(outcome, "outcome");
         Objects.requireNonNull(denyReason, "denyReason");
+        // callChain treated as optional in the shape; null coerced to
+        // an empty list rather than rejected so 9-arg call sites keep
+        // working uniformly with the 10-arg canonical form. Non-null
+        // input is defensively copied to an unmodifiable list so a
+        // caller mutating the list post-append cannot mutate the row.
+        callChain = callChain == null ? Collections.emptyList() : List.copyOf(callChain);
     }
 }

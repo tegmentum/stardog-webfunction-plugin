@@ -143,15 +143,22 @@ public final class CapabilityEnforcer {
                             final String argsSummary) {
         final String invoker = grant == null ? "" : grant.invokerPrincipal();
         final String extensionUri = ctx == null ? "" : ctx.extensionUri();
+        // Snapshot the current wasm-callbacks invocation chain — empty
+        // at the outermost frame or on non-wasm-callbacks dispatches.
+        // Threaded into every audit row we write so an operator can
+        // grep the ring by chain root or by chain member.
+        final java.util.List<String> callChain = ctx == null
+                ? java.util.Collections.emptyList()
+                : ctx.wasmCallChainSnapshot();
 
         // 1. Interface + method policy.
         if (grant == null || !grant.allowsInterface(interfaceName)) {
             denyAndThrow(invoker, extensionUri, interfaceName, method, argsSummary,
-                    WfCapabilityError.PerCallDenied.REASON_INTERFACE_DENIED);
+                    WfCapabilityError.PerCallDenied.REASON_INTERFACE_DENIED, callChain);
         }
         if (!grant.allowsMethod(interfaceName, method)) {
             denyAndThrow(invoker, extensionUri, interfaceName, method, argsSummary,
-                    WfCapabilityError.PerCallDenied.REASON_METHOD_DENIED);
+                    WfCapabilityError.PerCallDenied.REASON_METHOD_DENIED, callChain);
         }
 
         // 2. HTTP host allowlist. Empty allowlist means "no restriction
@@ -164,7 +171,7 @@ public final class CapabilityEnforcer {
                 && !grant.httpAllowlist().isEmpty()
                 && !grant.httpAllowlist().matches(argsSummary)) {
             denyAndThrow(invoker, extensionUri, interfaceName, method, argsSummary,
-                    WfCapabilityError.PerCallDenied.REASON_HOST_DENIED);
+                    WfCapabilityError.PerCallDenied.REASON_HOST_DENIED, callChain);
         }
 
         // 3. Shiro permission — collapse any Shiro/Stardog failure onto
@@ -190,12 +197,12 @@ public final class CapabilityEnforcer {
         }
         if (!shiroOk) {
             denyAndThrow(invoker, extensionUri, interfaceName, method, argsSummary,
-                    WfCapabilityError.PerCallDenied.REASON_PERMISSION_DENIED);
+                    WfCapabilityError.PerCallDenied.REASON_PERMISSION_DENIED, callChain);
         }
 
         // Success — one GRANTED row per dispatch per strategy memo §9.
         CapabilityAttributionRing.recordGranted(
-                invoker, extensionUri, interfaceName, method, argsSummary);
+                invoker, extensionUri, interfaceName, method, argsSummary, callChain);
     }
 
     /**
@@ -218,13 +225,30 @@ public final class CapabilityEnforcer {
                                 final String extensionUri,
                                 final String method,
                                 final String url) {
+        enforceHttpPath(grant, extensionUri, method, url,
+                java.util.Collections.emptyList());
+    }
+
+    /**
+     * Multi-level-aware {@link #enforceHttpPath} variant — the caller
+     * threads the current wasm-callbacks invocation chain into the
+     * audit-row so an operator scanning denials can see the root
+     * extension whose nested callee tripped the path check. Empty
+     * chain for non-wasm-callbacks paths.
+     */
+    public void enforceHttpPath(final CapabilityGrant grant,
+                                final String extensionUri,
+                                final String method,
+                                final String url,
+                                final java.util.List<String> callChain) {
         if (grant == null) return;
         if (grant.httpPathAllowlist().isEmpty()) return;
         final String hostAndPath = hostAndPathFromUrl(url);
         if (!grant.httpPathAllowlist().matches(hostAndPath)) {
             denyAndThrow(grant.invokerPrincipal(), extensionUri,
                     "http-callbacks", method, hostAndPath,
-                    WfCapabilityError.PerCallDenied.REASON_HTTP_PATH_DENIED);
+                    WfCapabilityError.PerCallDenied.REASON_HTTP_PATH_DENIED,
+                    callChain);
         }
     }
 
@@ -247,12 +271,28 @@ public final class CapabilityEnforcer {
                                   final String extensionUri,
                                   final String method,
                                   final String calleeUrl) {
+        enforceWasmCallee(grant, extensionUri, method, calleeUrl,
+                java.util.Collections.emptyList());
+    }
+
+    /**
+     * Multi-level-aware {@link #enforceWasmCallee} variant — carries
+     * the current wasm-callbacks invocation chain into the denial
+     * audit-row so an operator scanning callee-allowlist rejections
+     * can see the full path root → deepest.
+     */
+    public void enforceWasmCallee(final CapabilityGrant grant,
+                                  final String extensionUri,
+                                  final String method,
+                                  final String calleeUrl,
+                                  final java.util.List<String> callChain) {
         if (grant == null) return;
         if (grant.wasmCalleeAllowlist().isEmpty()) return;
         if (!grant.wasmCalleeAllowlist().matches(calleeUrl)) {
             denyAndThrow(grant.invokerPrincipal(), extensionUri,
                     "wasm-callbacks", method, calleeUrl == null ? "" : calleeUrl,
-                    WfCapabilityError.PerCallDenied.REASON_WASM_CALLEE_DENIED);
+                    WfCapabilityError.PerCallDenied.REASON_WASM_CALLEE_DENIED,
+                    callChain);
         }
     }
 
@@ -285,8 +325,25 @@ public final class CapabilityEnforcer {
                                      final String method,
                                      final String argsSummary,
                                      final String reason) {
+        denyAndThrow(invoker, extensionUri, interfaceName, method, argsSummary,
+                reason, java.util.Collections.emptyList());
+    }
+
+    /**
+     * Multi-level-aware {@link #denyAndThrow} variant — threads the
+     * caller's wasm-callbacks invocation chain into the DENIED audit
+     * row so an operator scanning denials can see the root extension
+     * whose deep callee tripped the rule.
+     */
+    private static void denyAndThrow(final String invoker,
+                                     final String extensionUri,
+                                     final String interfaceName,
+                                     final String method,
+                                     final String argsSummary,
+                                     final String reason,
+                                     final java.util.List<String> callChain) {
         CapabilityAttributionRing.recordDenied(
-                invoker, extensionUri, interfaceName, method, argsSummary, reason);
+                invoker, extensionUri, interfaceName, method, argsSummary, reason, callChain);
         throw new WfCapabilityError.PerCallDenied(
                 extensionUri, interfaceName, method, invoker, reason, argsSummary);
     }

@@ -94,8 +94,15 @@ public final class HostCallbacks {
         }
         final String invoker = grant == null ? "" : grant.invokerPrincipal();
         final String extensionUri = ctx.extensionUri();
+        // Attach the current wasm-callbacks invocation chain snapshot
+        // so an operator scanning the audit ring can see the full path
+        // root → deepest callee that fired the undeclared dispatch.
+        // Empty list for non-wasm-callbacks dispatches (matches
+        // CallbackContext.wasmCallChainSnapshot's empty-at-outermost
+        // semantics).
         CapabilityAttributionRing.recordGrantedUndeclared(
-                invoker, extensionUri, interfaceName, method, argsSummary);
+                invoker, extensionUri, interfaceName, method, argsSummary,
+                ctx.wasmCallChainSnapshot());
     }
 
     /**
@@ -197,7 +204,8 @@ public final class HostCallbacks {
         final Optional<CapabilityEnforcer> enforcer = CapabilityEnforcer.activePolicy();
         if (enforcer.isEmpty()) return;
         final CapabilityGrant grant = ctx.capabilityGrant().orElse(null);
-        enforcer.get().enforceHttpPath(grant, ctx.extensionUri(), method, url);
+        enforcer.get().enforceHttpPath(grant, ctx.extensionUri(), method, url,
+                ctx.wasmCallChainSnapshot());
     }
 
     /**
@@ -219,7 +227,8 @@ public final class HostCallbacks {
         final Optional<CapabilityEnforcer> enforcer = CapabilityEnforcer.activePolicy();
         if (enforcer.isEmpty()) return;
         final CapabilityGrant grant = ctx.capabilityGrant().orElse(null);
-        enforcer.get().enforceWasmCallee(grant, ctx.extensionUri(), method, calleeUrl);
+        enforcer.get().enforceWasmCallee(grant, ctx.extensionUri(), method, calleeUrl,
+                ctx.wasmCallChainSnapshot());
     }
 
     /** First-N-chars snippet for a SPARQL text argsSummary. */
