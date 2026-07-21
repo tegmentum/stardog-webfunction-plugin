@@ -493,9 +493,27 @@ public class StardogWasmInstance implements Closeable {
                                     + built.info().engineId() + "' does not support components");
                 }
                 SHARED_ENGINE = built;
+                // Task 303 T5 — kick the epoch ticker as soon as the engine
+                // exists so pure-compute wasm loops are interrupted at the
+                // next tick past the per-instance deadline. Idempotent: the
+                // ticker's own guard ignores repeat starts, and providers
+                // without EpochController quietly warn-log and no-op.
+                EpochTicker.instance().start(built, WebFunctionConfig.epochTickMillis());
             }
             return SHARED_ENGINE;
         }
+    }
+
+    /**
+     * Force-materialize the shared engine + start the ticker. Called by
+     * {@link WebFunctionServiceModule.EpochTickerStarter} at plugin install
+     * so the ticker is running from the first wf:call rather than the
+     * first invocation eating the engine-construction latency + tick lag.
+     * Safe to call from any thread and any point in the plugin's lifetime;
+     * idempotent via the shared-engine + ticker singletons.
+     */
+    public static void warmupSharedEngine() {
+        sharedEngine();
     }
 
     private static Component cachedComponentFor(final URL wasmUrl) throws IOException, ExecutionException {

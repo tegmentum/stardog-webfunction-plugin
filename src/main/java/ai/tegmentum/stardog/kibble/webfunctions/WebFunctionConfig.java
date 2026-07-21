@@ -240,9 +240,19 @@ public final class WebFunctionConfig {
         // other providers ship component-model support enabled by default (or not
         // at all — we discover at build time via engine.capabilities()). The
         // plugin is component-only, so the opt-in is always on.
+        //
+        // Task 303 T5 — enable wasmtime epoch interruption unconditionally so
+        // the shared {@link EpochTicker} can call incrementEpoch() and the
+        // per-instance {@code ComponentConfig.epochDeadline} set below
+        // ({@link #componentConfigFromSystemProperties}) takes effect. Cheap
+        // when unused: without a per-instance deadline set, wasmtime never
+        // consults the epoch counter for that store. Applying this
+        // unconditionally means an operator can toggle interruption on/off
+        // by setting {@link #PROP_MAX_EXEC_MILLIS} without a plugin restart.
         if ("wasmtime".equalsIgnoreCase(engineProvider())) {
             builder.engineConfig(WasmtimeConfig.builder()
                     .wasmComponentModel(true)
+                    .epochInterruption(true)
                     .build());
         }
 

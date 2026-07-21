@@ -85,6 +85,14 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
         // property is unset (backend stays closed; every tracker-sink-
         // callbacks dispatch returns `no-such-sink`).
         kernelModules.addBinding().to(SqliteTrackerBackendStarter.class);
+        // Task 303 T5 — wasm-level deadline interruption. Force-materialize
+        // the shared wasm engine at plugin install so the {@link EpochTicker}
+        // begins ticking immediately (rather than waiting for the first
+        // wf:call to warm the engine + start the ticker). Opt-in via
+        // {@link WebFunctionConfig#PROP_MAX_EXEC_MILLIS}: without an exec
+        // cap set, the starter no-ops and pure-compute wasm frames rely
+        // only on substrate fuel + memory ceilings.
+        kernelModules.addBinding().to(EpochTickerStarter.class);
     }
 
     /**
@@ -375,6 +383,53 @@ public final class WebFunctionServiceModule extends AbstractStardogModule {
             SqliteTrackerBackend.INSTANCE.open(path, sinks);
             LOG.info("web-function tracker-sink backend: opened '{}' with {} sink(s): {}",
                     path, sinks.size(), sinks);
+        }
+    }
+
+    /**
+     * Task 303 T5 — bootstrap the shared wasm engine + start the
+     * {@link EpochTicker} at plugin install time. Opt-in via
+     * {@link WebFunctionConfig#PROP_MAX_EXEC_MILLIS}: without a config
+     * cap, the starter no-ops and pure-compute wasm frames rely on the
+     * substrate's fuel + memory ceilings only (the ticker running with
+     * no per-instance epoch deadline is a harmless no-op, but paying
+     * engine-construction cost when interruption is unused is not).
+     *
+     * <p>When the master gate is set, the starter calls
+     * {@link StardogWasmInstance#warmupSharedEngine()}, which force-
+     * materializes the engine and — as a side effect of
+     * {@code sharedEngine()}'s ticker-start — begins ticking at the
+     * configured {@link WebFunctionConfig#epochTickMillis()} cadence.
+     * The starter is idempotent through the singleton ticker's guard;
+     * re-install inside a single JVM (test harnesses spinning modules
+     * twice) is safe.
+     */
+    static final class EpochTickerStarter implements KernelModule {
+
+        private static final Logger LOG = LoggerFactory.getLogger(EpochTickerStarter.class);
+
+        @Inject
+        EpochTickerStarter() {}
+
+        @Override
+        public void install(final Kernel theKernel) throws StardogException {
+            if (WebFunctionConfig.execMaxMillis().isEmpty()) {
+                LOG.debug("EpochTickerStarter: {} unset — ticker will not be started "
+                        + "(pure-compute wasm frames rely on substrate fuel/memory ceilings)",
+                        WebFunctionConfig.PROP_MAX_EXEC_MILLIS);
+                return;
+            }
+            try {
+                StardogWasmInstance.warmupSharedEngine();
+                LOG.info("EpochTickerStarter: shared engine warmed; tick interval {} ms",
+                        WebFunctionConfig.epochTickMillis());
+            } catch (RuntimeException e) {
+                // Engine construction failure must not take down plugin install —
+                // subsequent wf:call still tries to warm on demand and surfaces
+                // the real error there.
+                LOG.warn("EpochTickerStarter: warmup failed ({}) — deferring to first wf:call",
+                        e.toString());
+            }
         }
     }
 }
