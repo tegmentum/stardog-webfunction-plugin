@@ -29,6 +29,21 @@ public final class WebFunctionConfig {
     public static final int DEFAULT_CALLBACK_MAX_DEPTH = 100;
     public static final int DEFAULT_CALLBACK_MAX_ROWS  = 100_000;
 
+    // wasm-callbacks multi-level nesting cap. Task-279 MVP landed
+    // single-level nesting (root → callee, no deeper); this key extends
+    // the cap to a configurable depth. Default 8 — deep enough for
+    // realistic composition chains (e.g. router-extension → auth-check
+    // → tenant-config → data-fetch → post-process) without permitting
+    // pathological runaway recursion. Enforced at
+    // {@link CallbackContext#enterWasmCall(String)} (depth cap) and
+    // (cycle detection) — both surface {@link CallbackContext.WasmNestingException}
+    // which the WIT boundary maps to the {@code nesting-not-permitted}
+    // arm the F4 tightening added.
+    public static final String PROP_WASM_CALLBACKS_MAX_NESTING_DEPTH =
+            "webfunctions.wasm-callbacks.max-nesting-depth";
+
+    public static final int DEFAULT_WASM_CALLBACKS_MAX_NESTING_DEPTH = 8;
+
     public static final String DEFAULT_ENGINE_PROVIDER = "wasmtime";
 
     // Sink registry — Wave A (in-memory only). Comma-separated list of
@@ -273,6 +288,26 @@ public final class WebFunctionConfig {
     public static boolean callbackEnabled() {
         final String raw = System.getProperty(PROP_CALLBACK_ENABLED);
         return raw == null || raw.isEmpty() || Boolean.parseBoolean(raw.trim());
+    }
+
+    /**
+     * Maximum wasm-callbacks nesting depth. Root extension counts as
+     * depth 0; each nested {@code invoke-wasm} / {@code invoke-wasm-service}
+     * dispatch bumps the depth by 1. Reaching depth {@code max + 1}
+     * throws {@link CallbackContext.WasmNestingException} which the
+     * WIT boundary maps to the {@code nesting-not-permitted} arm.
+     *
+     * <p>Default {@link #DEFAULT_WASM_CALLBACKS_MAX_NESTING_DEPTH}
+     * ({@code 8}). Values ≤ 0 fall back to the default (rather than
+     * silently disabling nesting altogether — an operator that wants
+     * single-level nesting configures {@code 1}, not {@code 0}).
+     */
+    public static int wasmCallbacksMaxNestingDepth() {
+        final long raw = getLong(PROP_WASM_CALLBACKS_MAX_NESTING_DEPTH)
+                .orElse((long) DEFAULT_WASM_CALLBACKS_MAX_NESTING_DEPTH);
+        if (raw <= 0L) return DEFAULT_WASM_CALLBACKS_MAX_NESTING_DEPTH;
+        if (raw > Integer.MAX_VALUE) return Integer.MAX_VALUE;
+        return (int) raw;
     }
 
     /**

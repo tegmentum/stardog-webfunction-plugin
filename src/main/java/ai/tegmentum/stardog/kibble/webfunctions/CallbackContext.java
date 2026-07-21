@@ -109,12 +109,18 @@ public final class CallbackContext {
     // enforcement is disabled or when the extension had no ask.
     private CapabilityAsk capabilityAsk;
 
-    // wasm-callbacks single-level nesting counter. Incremented on entry
-    // to invoke-wasm / invoke-wasm-service dispatch, decremented on
-    // exit. HostCallbacks rejects a nested wasm-callbacks call (depth
-    // >= 1 on entry) with a wasm-call-error variant per the MVP
-    // "callee cannot itself invoke another callee" invariant.
+    // wasm-callbacks multi-level nesting state. Task-279 MVP tracked
+    // only a bounded depth counter (single-level nesting cap); the
+    // multi-level extension records the full invocation chain so
+    // {@link #enterWasmCall(String)} can enforce both a configurable
+    // depth cap ({@link WebFunctionConfig#wasmCallbacksMaxNestingDepth})
+    // and cycle detection (same URL appearing twice in the chain).
+    // Attribution rows carry a snapshot of this chain so operators can
+    // trace the full path root → depth-N callee. The counter is derived
+    // ({@link #wasmCallDepth} == {@link #callChain}.size()) — kept as
+    // an explicit field for pre-existing callers that read depth().
     private int wasmCallDepth = 0;
+    private final java.util.ArrayList<String> callChain = new java.util.ArrayList<>();
 
     // v0.3.2 prepared-query handles. The Stardog QueryFactory produces a
     // ReadQuery bound to a specific connection + monitor; we re-parse per
@@ -468,27 +474,147 @@ public final class CallbackContext {
 
     /**
      * Current wasm-callbacks nesting depth. Zero at the outermost frame;
-     * one while a callee is executing. HostCallbacks rejects a call
-     * when this is already {@code >= 1} on entry to invoke-wasm /
-     * invoke-wasm-service to enforce the MVP single-level nesting rule.
+     * bumped on entry to each {@code invoke-wasm} /
+     * {@code invoke-wasm-service} dispatch, decremented on exit. Post
+     * multi-level extension the depth is bounded by
+     * {@link WebFunctionConfig#wasmCallbacksMaxNestingDepth} (default 8)
+     * rather than the pre-existing single-level cap of 1.
      */
     public int wasmCallDepth() {
         return wasmCallDepth;
     }
 
     /**
-     * Increment the wasm-callbacks nesting counter. Called by
-     * HostCallbacks right before dispatching into a callee's evaluate.
-     * Must be paired with {@link #exitWasmCall()} in a try/finally so
-     * a callee-side trap does not leave the counter stuck at 1.
+     * Immutable snapshot of the current wasm-callbacks invocation
+     * chain, ordered root → deepest. Used by {@link HostCallbacks} when
+     * writing audit rows so operators can trace the full path a nested
+     * dispatch took. Empty at the outermost frame.
      */
-    public int enterWasmCall() {
+    public java.util.List<String> wasmCallChainSnapshot() {
+        return java.util.List.copyOf(callChain);
+    }
+
+    /**
+     * Enter a nested wasm-callbacks dispatch — bumps the depth counter
+     * and appends {@code calleeUrl} to the {@link #callChain}. Called
+     * by HostCallbacks right before dispatching into a callee's
+     * evaluate. Must be paired with {@link #exitWasmCall(String)} in a
+     * try/finally so a callee-side trap does not leave the counter or
+     * chain stuck.
+     *
+     * <p>Two structural rules are enforced here (both surface
+     * {@link WasmNestingException}, which the WIT boundary maps to the
+     * {@code nesting-not-permitted} arm):
+     * <ul>
+     *   <li><b>Depth cap</b> — reaching depth {@code max + 1} is
+     *       rejected. Max is
+     *       {@link WebFunctionConfig#wasmCallbacksMaxNestingDepth}
+     *       (default 8; configurable via
+     *       {@code webfunctions.wasm-callbacks.max-nesting-depth}).</li>
+     *   <li><b>Cycle detection</b> — if {@code calleeUrl} already
+     *       appears anywhere in the current chain, the dispatch is a
+     *       cycle and is rejected before entering. Comparison is
+     *       string-equality (URLs on the wire are strings; no
+     *       normalization).</li>
+     * </ul>
+     */
+    public int enterWasmCall(final String calleeUrl) {
+        final int max = WebFunctionConfig.wasmCallbacksMaxNestingDepth();
+        if (wasmCallDepth >= max) {
+            throw new WasmNestingException(
+                    WasmNestingException.REASON_DEPTH_EXCEEDED,
+                    "wasm-callbacks: nesting depth cap exceeded (attempted depth "
+                            + (wasmCallDepth + 1) + " > max " + max + "); config: "
+                            + WebFunctionConfig.PROP_WASM_CALLBACKS_MAX_NESTING_DEPTH,
+                    calleeUrl,
+                    callChain);
+        }
+        if (calleeUrl != null && !calleeUrl.isEmpty() && callChain.contains(calleeUrl)) {
+            throw new WasmNestingException(
+                    WasmNestingException.REASON_CYCLE_DETECTED,
+                    "wasm-callbacks: cycle detected — callee '" + calleeUrl
+                            + "' already appears in the invocation chain " + callChain,
+                    calleeUrl,
+                    callChain);
+        }
+        callChain.add(calleeUrl == null ? "" : calleeUrl);
         return ++wasmCallDepth;
     }
 
-    /** Decrement the wasm-callbacks nesting counter. */
-    public int exitWasmCall() {
+    /**
+     * Legacy no-arg overload for pre-multi-level call sites (tests
+     * that prime nesting state without a URL). Delegates with an
+     * empty-string callee so the chain still bumps by one entry —
+     * cycle detection ignores empty entries so priming with this
+     * overload does not clash with a real URL-carrying dispatch.
+     */
+    public int enterWasmCall() {
+        return enterWasmCall("");
+    }
+
+    /**
+     * Exit a nested wasm-callbacks dispatch — pops the last entry off
+     * the {@link #callChain} and decrements the counter. Callers pass
+     * the same {@code calleeUrl} they entered with; the argument is
+     * currently a documentation aid (the pop is by position, not by
+     * value), but future defensive assertions may use it to catch
+     * mismatched enter/exit pairs.
+     */
+    public int exitWasmCall(final String calleeUrl) {
+        if (!callChain.isEmpty()) {
+            callChain.remove(callChain.size() - 1);
+        }
         return --wasmCallDepth;
+    }
+
+    /**
+     * Legacy no-arg overload — pops the last chain entry regardless
+     * of URL. Kept for pre-multi-level test call sites.
+     */
+    public int exitWasmCall() {
+        return exitWasmCall(null);
+    }
+
+    /**
+     * Typed exception thrown by {@link #enterWasmCall(String)} when
+     * either the depth cap is exceeded or a cycle is detected in the
+     * invocation chain. The WIT boundary catches this and maps it to
+     * the {@code nesting-not-permitted} arm of the {@code wasm-call-error}
+     * variant (the F4 tightening added the arm; this exception now
+     * covers both structural failure modes uniformly).
+     *
+     * <p>The {@link #reason()} tag lets the boundary layer include the
+     * discriminator ({@code depth-exceeded} vs {@code cycle-detected})
+     * in the payload string without depending on the exception message
+     * shape.
+     */
+    public static final class WasmNestingException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        /** Discriminator tag — depth cap was hit. */
+        public static final String REASON_DEPTH_EXCEEDED = "depth-exceeded";
+        /** Discriminator tag — same URL already appears in the chain. */
+        public static final String REASON_CYCLE_DETECTED = "cycle-detected";
+
+        private final String reason;
+        private final String calleeUrl;
+        private final java.util.List<String> chainSnapshot;
+
+        public WasmNestingException(final String reason,
+                                    final String message,
+                                    final String calleeUrl,
+                                    final java.util.List<String> chain) {
+            super(message);
+            this.reason = reason;
+            this.calleeUrl = calleeUrl == null ? "" : calleeUrl;
+            this.chainSnapshot = chain == null
+                    ? java.util.Collections.emptyList()
+                    : java.util.List.copyOf(chain);
+        }
+
+        public String reason() { return reason; }
+        public String calleeUrl() { return calleeUrl; }
+        public java.util.List<String> chainSnapshot() { return chainSnapshot; }
     }
 
     /**
