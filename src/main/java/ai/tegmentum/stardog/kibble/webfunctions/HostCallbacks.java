@@ -1244,6 +1244,29 @@ public final class HostCallbacks {
             return new Object[] { ComponentVal.err(wasmCallError("invocation-error",
                 "invoke-wasm: callee trap: "
                 + (ioe.getMessage() == null ? ioe.toString() : ioe.getMessage()))) };
+        } catch (WfBudgetError e) {
+            // Typed budget error thrown from a deeper wasm-callbacks frame
+            // (WfBudgetError.DeadlineExceeded from a deeper checkDeadline,
+            // WfBudgetError.PerInvocationTrap promoted from FuelTrapMapper,
+            // WfBudgetError.UserQuotaExhausted from a deeper pre-invocation
+            // quota check). HostCallbackTollExhausted is caught above and
+            // mapped to the WIT `fuel-exhausted` arm per F4 — the other
+            // variants have no dedicated arm and must propagate so the
+            // outer wf:call catch surface (Call.evaluate /
+            // WebFunctionServiceOperator.computeNext) promotes them to
+            // typed SPARQL errors with their full JSON payload, rather
+            // than the pre-fix generic `invocation-error` wrap that
+            // stripped the discriminator.
+            throw e;
+        } catch (WfCapabilityError e) {
+            // Same pattern for capability-policy denials from a deeper
+            // frame. PerCallDenied is caught earlier in invokeWasmDispatch
+            // and mapped to the WIT `not-permitted` arm; LoadTimeDenied,
+            // UnknownExtension, and PolicyStoreUnavailable have no
+            // dedicated arm and must propagate so audit tooling and
+            // clients see the typed variant rather than the pre-fix
+            // generic `invocation-error` wrap.
+            throw e;
         } catch (Exception e) {
             // Shiro auth exceptions are RuntimeExceptions; discriminate
             // by class-name to avoid a compile-time shiro-core dep.
