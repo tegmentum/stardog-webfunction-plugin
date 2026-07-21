@@ -101,6 +101,7 @@ import java.nio.charset.Charset;
     TestSqliteTrackerBackend.class,
     TestTrackerSinkCallbacks.class,
     TestToUpper.class,
+    TestWasmCallbackChainSemantics.class,
     TestWasmCalleeAllowlist.class,
     TestWasmCustomSectionReader.class,
     TestWebFunctionCapability.class,
