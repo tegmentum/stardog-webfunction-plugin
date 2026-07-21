@@ -490,6 +490,26 @@ public final class HostCallbacks {
                     } finally {
                         ctx.exit();
                     }
+                } catch (WfBudgetError e) {
+                    // Typed budget error thrown from nested wasm dispatch
+                    // (e.g. WfBudgetError.HostCallbackTollExhausted from a
+                    // deeper chargeToll, WfBudgetError.DeadlineExceeded from
+                    // a deeper checkDeadline, WfBudgetError.PerInvocationTrap
+                    // promoted from FuelTrapMapper, or
+                    // WfBudgetError.UserQuotaExhausted from a deeper
+                    // pre-invocation quota check). Rethrow so
+                    // Call.evaluate / WebFunctionServiceOperator.computeNext
+                    // see the specific variant and route it through
+                    // FuelTrapMapper.mapOrNull for typed SPARQL-error
+                    // promotion, rather than a generic WIT error string.
+                    throw e;
+                } catch (WfCapabilityError e) {
+                    // Same pattern for capability-policy denials — the outer
+                    // catch surface hands these to the typed SPARQL error
+                    // path. Swallowing here would strip the discriminator
+                    // (reason, missing_interface, policy_source, etc.) that
+                    // audit tooling and clients depend on.
+                    throw e;
                 } catch (Exception e) {
                     return new Object[] { ComponentVal.err(ComponentVal.string(
                         "invoke-wasm: " + (e.getMessage() == null ? e.toString() : e.getMessage()))) };
