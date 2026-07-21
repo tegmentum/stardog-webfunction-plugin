@@ -122,6 +122,25 @@ public final class CallbackContext {
     private int wasmCallDepth = 0;
     private final java.util.ArrayList<String> callChain = new java.util.ArrayList<>();
 
+    // Deadline propagation — captured at bind time so nested host-callback
+    // dispatches (invoke-wasm chains at any depth) inherit the outer
+    // deadline through the shared ThreadLocal context. Two independent
+    // sources feed the effective trip:
+    //   * config side: WebFunctionConfig.execMaxMillis() -- resolved once
+    //     at bind time into an absolute nanoTime() deadline (deadlineNanos).
+    //     Zero means "no plugin-side deadline; substrate ceilings only".
+    //   * monitor side: executionContext.getMonitor().isCancelled() checked
+    //     live at each dispatch. Detects the outer query's Stardog-side
+    //     cancellation (query timeout, admin kill, shutdown) at the plugin
+    //     boundary so nested host callbacks unwind promptly instead of
+    //     churning inside a doomed invocation.
+    // Both checks run at every host-callback boundary via checkDeadline();
+    // whichever trips first surfaces as WfBudgetError.DeadlineExceeded and
+    // rides the same promotion path as the fuel toll traps.
+    private final long deadlineNanos;    // 0 = no config-side deadline
+    private final long deadlineMillis;   // config value at bind time (for error payload); 0 when unset
+    private final long boundAtNanos;     // wall-clock start reference for elapsed accounting
+
     // v0.3.2 prepared-query handles. The Stardog QueryFactory produces a
     // ReadQuery bound to a specific connection + monitor; we re-parse per
     // call today, but Stardog's kernel-level plan cache short-circuits the
@@ -147,6 +166,20 @@ public final class CallbackContext {
         this.capabilityGrant = null;
         this.invokerSubject = null;
         this.capabilityAsk = null;
+
+        // Deadline plumbing — snapshot the plugin-side cap (if configured)
+        // as an absolute nanoTime() so subsequent checkDeadline() calls
+        // avoid recomputing. Zero cap => no deadline; skip the arithmetic
+        // and use 0L as sentinel throughout checkDeadline().
+        this.boundAtNanos = System.nanoTime();
+        final long capMs = WebFunctionConfig.execMaxMillis().orElse(0L);
+        if (capMs > 0L) {
+            this.deadlineMillis = capMs;
+            this.deadlineNanos = boundAtNanos + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(capMs);
+        } else {
+            this.deadlineMillis = 0L;
+            this.deadlineNanos = 0L;
+        }
     }
 
     /**
@@ -379,6 +412,90 @@ public final class CallbackContext {
                     tollHostCallbackToll);
         }
         tollUsed += tollHostCallbackToll;
+    }
+
+    /**
+     * Check the invocation's deadline at a host-callback boundary. No-op
+     * when neither source is configured (config cap unset AND no bound
+     * ExecutionContext / monitor). Called from
+     * {@link HostCallbacks#enforceCapability} at the start of every host
+     * callback dispatch so a nested chain (invoke-wasm at any depth,
+     * host-callback fan-out at any depth) unwinds promptly at the next
+     * boundary once either source trips.
+     *
+     * <p>Two independent trips, checked in order (cheapest first):
+     * <ol>
+     *   <li>Config-side — {@link System#nanoTime()} vs the deadline
+     *       stamp captured at construction from
+     *       {@link WebFunctionConfig#execMaxMillis()}.</li>
+     *   <li>Monitor-side — {@code executionContext.getMonitor().isCancelled()}.
+     *       Detects Stardog query-level cancellation (query timeout, admin
+     *       kill, shutdown) at the plugin boundary.</li>
+     * </ol>
+     *
+     * <p>On trip, throws {@link WfBudgetError.DeadlineExceeded} carrying
+     * the callback name so the outer catch site in {@link Call#evaluate} /
+     * {@link WebFunctionServiceOperator#computeNext} can pass it through
+     * the {@link WfBudgetError} promotion path as a typed SPARQL error.
+     * Monitor-side probe failure (RuntimeException from a torn-down
+     * monitor) is swallowed — a broken monitor must not synthesize a
+     * false deadline trip.
+     */
+    public void checkDeadline(final String callbackName) {
+        // Config-side trip — cheap absolute comparison; nothing when no cap set.
+        if (deadlineNanos != 0L && System.nanoTime() >= deadlineNanos) {
+            final long elapsed = elapsedMillisSinceBind();
+            throw new WfBudgetError.DeadlineExceeded(
+                    extensionUri,
+                    callbackName == null ? "" : callbackName,
+                    elapsed,
+                    deadlineMillis,
+                    WfBudgetError.DeadlineExceeded.SOURCE_CONFIG);
+        }
+        // Monitor-side trip — Stardog's ExecutionMonitor reports cancellation
+        // when the outer query hits its timeout or is admin-killed. Only the
+        // SERVICE bind path carries a monitor; filter-function wf:call does
+        // not, so this branch is a no-op there.
+        if (executionContext != null) {
+            try {
+                final ExecutionMonitor monitor = executionContext.getMonitor();
+                if (monitor != null && monitor.isCancelled()) {
+                    final long elapsed = elapsedMillisSinceBind();
+                    throw new WfBudgetError.DeadlineExceeded(
+                            extensionUri,
+                            callbackName == null ? "" : callbackName,
+                            elapsed,
+                            // deadline_millis: 0 signals "monitor drove
+                            // this; the numeric cap did not"
+                            0L,
+                            WfBudgetError.DeadlineExceeded.SOURCE_MONITOR);
+                }
+            } catch (WfBudgetError propagate) {
+                throw propagate;
+            } catch (RuntimeException ignore) {
+                // Torn-down or otherwise broken monitor — do not synthesize
+                // a false deadline trip. Config-side check above still
+                // guards a true wall-clock overrun.
+            }
+        }
+    }
+
+    /** Wall-clock elapsed millis since this context was constructed. */
+    public long elapsedMillisSinceBind() {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - boundAtNanos);
+    }
+
+    /**
+     * Effective plugin-side deadline in milliseconds captured at bind time,
+     * or {@link java.util.OptionalLong#empty()} when no config cap was set.
+     * Test / diagnostic accessor — the hot path uses the nanoTime stamp
+     * directly through {@link #checkDeadline(String)}.
+     */
+    public java.util.OptionalLong deadlineMillisIfConfigured() {
+        return deadlineMillis > 0L
+                ? java.util.OptionalLong.of(deadlineMillis)
+                : java.util.OptionalLong.empty();
     }
 
     /** Bind without a query context — sub-queries via execute-query unavailable. */

@@ -277,6 +277,28 @@ public final class WebFunctionConfig {
         };
     }
 
+    /**
+     * Plugin-side execution deadline in milliseconds, sourced from
+     * {@link #PROP_MAX_EXEC_MILLIS}. Consumed by {@link CallbackContext}
+     * at bind time to stamp an effective deadline on the invocation; every
+     * host-callback dispatch then compares {@link System#nanoTime()} against
+     * the stamp and throws {@link WfBudgetError.DeadlineExceeded} on trip.
+     *
+     * <p>Empty {@link OptionalLong} when the property is unset — no
+     * plugin-side deadline; the invocation still honors the outer query's
+     * Stardog {@code ExecutionMonitor.isCancelled()}, checked at the same
+     * dispatch chokepoint.
+     *
+     * <p>Reuses {@link #PROP_MAX_EXEC_MILLIS} intentionally — the same
+     * property already feeds {@link #resourceLimitsFromSystemProperties()}
+     * as the substrate-level engine ceiling, so operators express a single
+     * "maximum execution time" value and the plugin applies it at both the
+     * substrate and the host-callback dispatch layers.
+     */
+    public static OptionalLong execMaxMillis() {
+        return getLong(PROP_MAX_EXEC_MILLIS);
+    }
+
     public static int callbackMaxDepth() {
         return (int) getLong(PROP_CALLBACK_MAX_DEPTH).orElse(DEFAULT_CALLBACK_MAX_DEPTH);
     }

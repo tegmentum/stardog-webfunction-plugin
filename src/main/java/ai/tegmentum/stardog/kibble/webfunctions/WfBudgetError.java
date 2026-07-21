@@ -37,7 +37,8 @@ import java.time.Instant;
 public abstract sealed class WfBudgetError extends StardogException
         permits WfBudgetError.PerInvocationTrap,
                 WfBudgetError.HostCallbackTollExhausted,
-                WfBudgetError.UserQuotaExhausted {
+                WfBudgetError.UserQuotaExhausted,
+                WfBudgetError.DeadlineExceeded {
 
     private final String errorCode;
     private final String jsonPayload;
@@ -265,6 +266,109 @@ public abstract sealed class WfBudgetError extends StardogException
                     + "\"monthly_used\":" + monthlyUsed + ","
                     + "\"monthly_budget\":" + monthlyBudget + ","
                     + "\"reset_at\":\"" + jsonEscape(resetAt == null ? "" : resetAt.toString()) + "\""
+                    + "}";
+        }
+    }
+
+    /**
+     * {@code WF_DEADLINE_EXCEEDED} — the invocation's effective deadline
+     * has been reached at a host-callback boundary. Two sources feed the
+     * deadline:
+     * <ul>
+     *   <li>{@code SOURCE_CONFIG} — the plugin's own
+     *       {@link WebFunctionConfig#PROP_MAX_EXEC_MILLIS} cap, captured
+     *       at {@link CallbackContext} bind time. Elapsed wall-clock time
+     *       since bind exceeded the cap.</li>
+     *   <li>{@code SOURCE_MONITOR} — the outer query's Stardog
+     *       {@code ExecutionMonitor} reported {@code isCancelled()} (query
+     *       timeout, admin kill, or shutdown). Detected at the next
+     *       host-callback dispatch.</li>
+     * </ul>
+     *
+     * <p>Fires cooperatively at host-callback dispatch — a wasm frame that
+     * never re-enters a host callback (pure compute) is not interrupted
+     * by this variant; the substrate's engine-level ceilings (fuel cap,
+     * epoch deadline if enabled) cover that path. Chain propagation is
+     * automatic: nested wasm invocations share the outer CallbackContext,
+     * so a deadline captured at the root frame applies to every callee
+     * dispatch.
+     *
+     * <p>JSON payload schema:
+     * <pre>
+     * {
+     *   "error_code": "WF_DEADLINE_EXCEEDED",
+     *   "extension": "&lt;ipfs://... or file://... wasm URI&gt;",
+     *   "callback_name": "&lt;e.g. graph-callbacks.execute-query&gt;",
+     *   "elapsed_millis": &lt;long, wall-clock since context bind&gt;,
+     *   "deadline_millis": &lt;long, config cap; 0 when triggered by monitor&gt;,
+     *   "source": "config" | "monitor"
+     * }
+     * </pre>
+     */
+    public static final class DeadlineExceeded extends WfBudgetError {
+
+        /** Config-side trip — {@link WebFunctionConfig#PROP_MAX_EXEC_MILLIS}. */
+        public static final String SOURCE_CONFIG  = "config";
+        /** Monitor-side trip — Stardog {@code ExecutionMonitor.isCancelled()}. */
+        public static final String SOURCE_MONITOR = "monitor";
+
+        private final String extensionUri;
+        private final String callbackName;
+        private final long   elapsedMillis;
+        private final long   deadlineMillis;
+        private final String source;
+
+        public DeadlineExceeded(final String extensionUri,
+                                final String callbackName,
+                                final long elapsedMillis,
+                                final long deadlineMillis,
+                                final String source) {
+            super("WF_DEADLINE_EXCEEDED",
+                  humanMessage(extensionUri, callbackName, elapsedMillis, deadlineMillis, source),
+                  jsonOf(extensionUri, callbackName, elapsedMillis, deadlineMillis, source));
+            this.extensionUri = extensionUri == null ? "" : extensionUri;
+            this.callbackName = callbackName == null ? "" : callbackName;
+            this.elapsedMillis = elapsedMillis;
+            this.deadlineMillis = deadlineMillis;
+            this.source = source == null ? "" : source;
+        }
+
+        public String extensionUri()   { return extensionUri; }
+        public String callbackName()   { return callbackName; }
+        public long   elapsedMillis()  { return elapsedMillis; }
+        public long   deadlineMillis() { return deadlineMillis; }
+        public String source()         { return source; }
+
+        private static String humanMessage(final String extensionUri,
+                                           final String callbackName,
+                                           final long elapsedMillis,
+                                           final long deadlineMillis,
+                                           final String source) {
+            if (SOURCE_MONITOR.equals(source)) {
+                return "Extension '" + extensionUri + "' cancelled at host callback '"
+                        + callbackName + "' — outer query monitor reported cancellation "
+                        + "after " + elapsedMillis + " ms. This is a query-level timeout "
+                        + "or admin cancellation observed at the plugin boundary.";
+            }
+            return "Extension '" + extensionUri + "' exceeded the plugin-side execution "
+                    + "deadline (" + deadlineMillis + " ms) at host callback '"
+                    + callbackName + "' after " + elapsedMillis + " ms. Raise "
+                    + WebFunctionConfig.PROP_MAX_EXEC_MILLIS
+                    + " or reduce the extension's callback chain latency.";
+        }
+
+        private static String jsonOf(final String extensionUri,
+                                     final String callbackName,
+                                     final long elapsedMillis,
+                                     final long deadlineMillis,
+                                     final String source) {
+            return "{"
+                    + "\"error_code\":\"WF_DEADLINE_EXCEEDED\","
+                    + "\"extension\":\"" + jsonEscape(extensionUri == null ? "" : extensionUri) + "\","
+                    + "\"callback_name\":\"" + jsonEscape(callbackName == null ? "" : callbackName) + "\","
+                    + "\"elapsed_millis\":" + elapsedMillis + ","
+                    + "\"deadline_millis\":" + deadlineMillis + ","
+                    + "\"source\":\"" + jsonEscape(source == null ? "" : source) + "\""
                     + "}";
         }
     }
