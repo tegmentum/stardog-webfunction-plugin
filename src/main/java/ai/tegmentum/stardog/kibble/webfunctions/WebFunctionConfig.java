@@ -287,6 +287,15 @@ public final class WebFunctionConfig {
         }
         getLong(PROP_MAX_TABLE_ELEMS).ifPresent(builder::maxTableElements);
         getLong(PROP_MAX_INSTANCES).ifPresent(builder::maxInstances);
+        // Task 303 T5 — wasm-level deadline interruption. Set the per-store
+        // epoch deadline in ticks so the ticker's engine.incrementEpoch()
+        // calls eventually trip a wasmtime {@code TrapType.INTERRUPT} for
+        // pure-compute wasm frames that never re-enter a host callback.
+        // Absent {@link #PROP_MAX_EXEC_MILLIS} yields an empty
+        // {@link OptionalLong} — the wasmtime provider then skips the
+        // {@code store.setEpochDeadline} call entirely and epoch never
+        // trips on that store.
+        epochDeadlineTicks().ifPresent(builder::epochDeadline);
         return builder.build();
     }
 
