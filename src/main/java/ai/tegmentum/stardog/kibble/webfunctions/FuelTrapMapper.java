@@ -64,7 +64,18 @@ final class FuelTrapMapper {
         // the two trap types are mutually exclusive from wasmtime's side
         // but the message check for OUT_OF_FUEL happens to match some
         // shared prefix layouts, so the INTERRUPT check takes priority.
-        if (hasInterruptTrap(thrown)) {
+        //
+        // Untyped-wasm-trap fallback covers the wasmtime4j 46.0.1-1.4.7 /
+        // webassembly4j 2.4.3 shape where the JNI wraps the trap with
+        // "Function call failed: {}" — Rust's Display drops the inner
+        // trap-type message so we see a generic {@link WasmRuntimeException}
+        // and cannot key off the trap type textually. The guard is tight:
+        // untyped-wasm-trap message shape AND elapsed time past the
+        // configured deadline. This mirrors how the fast path would fire
+        // for a properly-typed INTERRUPT trap on a substrate that surfaces
+        // the trap type in the message.
+        if (hasInterruptTrap(thrown)
+                || isProbableInterruptByElapsed(thrown, ctx)) {
             final String extensionUri = ctx == null ? "" : ctx.extensionUri();
             // Elapsed since bind is the honest wall-clock reading; the
             // ticker's tick interval is a strict lower bound on the
@@ -166,6 +177,73 @@ final class FuelTrapMapper {
             // here; the string check above is our fallback.
         }
         return false;
+    }
+
+    /**
+     * Untyped-wasm-trap fallback for INTERRUPT recognition. As of
+     * wasmtime4j 46.0.1-1.4.7 / webassembly4j 2.4.3, the JNI wraps every
+     * wasmtime {@code Func::call} error with {@code
+     * format!("Function call failed: {}", e)}. Rust anyhow's Display via
+     * {@code "{}"} shows only the outermost error message, so wasmtime's
+     * inner {@code "wasm trap: interrupt"} text lands on {@code e.source()}
+     * and is dropped before reaching Java. The exception surfaces as
+     * {@link ai.tegmentum.wasmtime4j.exception.WasmRuntimeException} with
+     * a message shaped {@code "Runtime error: Function call failed: error
+     * while executing at wasm backtrace: ..."} — no trap-type indicator.
+     *
+     * <p>This helper matches that specific untyped-trap shape from the
+     * wasmtime provider. Callers who add the epoch-deadline-exceeded
+     * elapsed-time guard on top of this match get a conservative
+     * INTERRUPT signal even without substrate trap-type propagation.
+     * When the substrate fixes trap-type surfacing (upstream {@code "{:#}"}
+     * or explicit trap-code parsing in the JNI's error mapper), this
+     * fallback becomes redundant with the fast path above — but stays
+     * harmless because the fast path fires first.
+     */
+    private static boolean looksLikeUntypedWasmtimeTrap(final Throwable t) {
+        Throwable cur = t;
+        int hops = 0;
+        while (cur != null && hops < 16) {
+            final String msg = cur.getMessage();
+            if (msg != null
+                    && msg.contains("error while executing at wasm backtrace")) {
+                return true;
+            }
+            cur = cur.getCause();
+            hops++;
+        }
+        return false;
+    }
+
+    /**
+     * Elapsed wall-clock exceeded the configured plugin-side deadline by
+     * a comfortable margin. Only meaningful when
+     * {@link WebFunctionConfig#PROP_MAX_EXEC_MILLIS} is set and the
+     * caller passed a bound {@link CallbackContext}. Used with
+     * {@link #looksLikeUntypedWasmtimeTrap} to attribute an untyped
+     * wasm trap to epoch interruption without over-triggering.
+     */
+    private static boolean elapsedPastDeadline(final CallbackContext ctx) {
+        if (ctx == null) return false;
+        final long capMs = WebFunctionConfig.execMaxMillis().orElse(0L);
+        if (capMs <= 0L) return false;
+        // A 10% grace covers the ticker's own quantization + JVM
+        // scheduling jitter — no false positives from an untyped trap
+        // that fired right around the deadline for unrelated reasons.
+        return ctx.elapsedMillisSinceBind() >= capMs;
+    }
+
+    /**
+     * True when the throwable looks like an INTERRUPT trap even though
+     * the wasmtime substrate did not propagate the trap type. Requires
+     * both an untyped-wasm-trap message shape and elapsed time past the
+     * configured deadline — the tight guard prevents mislabeling a
+     * genuinely different trap (memory-out-of-bounds, integer-overflow)
+     * that happened to fire late in a long invocation.
+     */
+    private static boolean isProbableInterruptByElapsed(final Throwable thrown,
+                                                        final CallbackContext ctx) {
+        return looksLikeUntypedWasmtimeTrap(thrown) && elapsedPastDeadline(ctx);
     }
 
     /**

@@ -476,32 +476,37 @@ public class StardogWasmInstance implements Closeable {
     }
 
     private static Engine sharedEngine() {
-        Engine e = SHARED_ENGINE;
-        if (e != null) return e;
-        synchronized (SHARED_ENGINE_LOCK) {
-            if (SHARED_ENGINE == null) {
-                final ai.tegmentum.webassembly4j.api.WebAssemblyBuilder engineBuilder =
-                        WebAssembly.builder()
-                                .provider(WebFunctionConfig.engineProvider())
-                                .config(WebFunctionConfig.fromSystemProperties());
-                WebFunctionConfig.engineId().ifPresent(engineBuilder::engine);
-                final Engine built = engineBuilder.build();
-                if (!built.capabilities().supportsComponents()) {
-                    built.close();
-                    throw new IllegalStateException(
-                            "webfunction plugin requires component-model support; engine '"
-                                    + built.info().engineId() + "' does not support components");
+        Engine cached = SHARED_ENGINE;
+        if (cached == null) {
+            synchronized (SHARED_ENGINE_LOCK) {
+                if (SHARED_ENGINE == null) {
+                    final ai.tegmentum.webassembly4j.api.WebAssemblyBuilder engineBuilder =
+                            WebAssembly.builder()
+                                    .provider(WebFunctionConfig.engineProvider())
+                                    .config(WebFunctionConfig.fromSystemProperties());
+                    WebFunctionConfig.engineId().ifPresent(engineBuilder::engine);
+                    final Engine built = engineBuilder.build();
+                    if (!built.capabilities().supportsComponents()) {
+                        built.close();
+                        throw new IllegalStateException(
+                                "webfunction plugin requires component-model support; engine '"
+                                        + built.info().engineId() + "' does not support components");
+                    }
+                    SHARED_ENGINE = built;
                 }
-                SHARED_ENGINE = built;
-                // Task 303 T5 — kick the epoch ticker as soon as the engine
-                // exists so pure-compute wasm loops are interrupted at the
-                // next tick past the per-instance deadline. Idempotent: the
-                // ticker's own guard ignores repeat starts, and providers
-                // without EpochController quietly warn-log and no-op.
-                EpochTicker.instance().start(built, WebFunctionConfig.epochTickMillis());
+                cached = SHARED_ENGINE;
             }
-            return SHARED_ENGINE;
         }
+        // Task 303 T5 — always try to (re)start the epoch ticker after
+        // resolving the engine. The ticker's own singleton guard is a
+        // fast no-op when it's already running at the current interval;
+        // when a prior test (or ops-side ticker.stop()) left it stopped,
+        // this restart brings it back at the currently-configured
+        // {@link WebFunctionConfig#epochTickMillis()} cadence. Providers
+        // without EpochController quietly warn-log and no-op — safe to
+        // call on every engine acquisition.
+        EpochTicker.instance().start(cached, WebFunctionConfig.epochTickMillis());
+        return cached;
     }
 
     /**

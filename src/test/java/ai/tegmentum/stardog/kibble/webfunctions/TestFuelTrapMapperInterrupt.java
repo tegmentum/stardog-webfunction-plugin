@@ -129,4 +129,68 @@ public class TestFuelTrapMapperInterrupt {
                 new RuntimeException("something else entirely"), null);
         assertThat(mapped).isNull();
     }
+
+    /**
+     * Untyped-wasm-trap fallback — wasmtime4j 46.0.1-1.4.7 wraps every
+     * trap with a message that lacks the trap-type indicator. Under the
+     * conditions "message shape is a wasm backtrace" AND "elapsed time
+     * exceeded the deadline," the mapper promotes to DeadlineExceeded.
+     */
+    @Test
+    public void untypedWasmTrapWithElapsedPastDeadlinePromotes() throws InterruptedException {
+        System.setProperty(WebFunctionConfig.PROP_MAX_EXEC_MILLIS, "10");
+        final CallbackContext ctx = CallbackContext.bind();
+        try {
+            // Elapse past the 10 ms deadline.
+            Thread.sleep(30L);
+            final RuntimeException untypedTrap = new RuntimeException(
+                    "Runtime error: Function call failed: error while executing at wasm backtrace:\n"
+                            + "    0:   0x89ca - example.wasm!some_func");
+            final WfBudgetError mapped = FuelTrapMapper.mapOrNull(untypedTrap, ctx);
+            assertThat(mapped).isInstanceOf(WfBudgetError.DeadlineExceeded.class);
+        } finally {
+            CallbackContext.unbindIfOutermost(ctx);
+        }
+    }
+
+    /**
+     * Untyped-wasm-trap that fires BEFORE the deadline elapsed — the
+     * fallback is guarded on elapsed time so we do not misclassify an
+     * OOB or arithmetic trap that happens to look untyped.
+     */
+    @Test
+    public void untypedWasmTrapBeforeDeadlineDoesNotPromote() {
+        System.setProperty(WebFunctionConfig.PROP_MAX_EXEC_MILLIS, "10000");
+        final CallbackContext ctx = CallbackContext.bind();
+        try {
+            final RuntimeException untypedTrap = new RuntimeException(
+                    "Runtime error: Function call failed: error while executing at wasm backtrace:\n"
+                            + "    0:   0x89ca - example.wasm!some_func");
+            final WfBudgetError mapped = FuelTrapMapper.mapOrNull(untypedTrap, ctx);
+            assertThat(mapped).isNull();
+        } finally {
+            CallbackContext.unbindIfOutermost(ctx);
+        }
+    }
+
+    /**
+     * Untyped-wasm-trap with NO deadline configured — the fallback is
+     * disabled since there is no plugin-side cap to compare elapsed
+     * time against.
+     */
+    @Test
+    public void untypedWasmTrapWithNoDeadlineDoesNotPromote() throws InterruptedException {
+        System.clearProperty(WebFunctionConfig.PROP_MAX_EXEC_MILLIS);
+        final CallbackContext ctx = CallbackContext.bind();
+        try {
+            Thread.sleep(20L);
+            final RuntimeException untypedTrap = new RuntimeException(
+                    "Runtime error: Function call failed: error while executing at wasm backtrace:\n"
+                            + "    0:   0x89ca - example.wasm!some_func");
+            final WfBudgetError mapped = FuelTrapMapper.mapOrNull(untypedTrap, ctx);
+            assertThat(mapped).isNull();
+        } finally {
+            CallbackContext.unbindIfOutermost(ctx);
+        }
+    }
 }
