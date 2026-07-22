@@ -254,8 +254,8 @@ public final class CapabilityEnforcer {
 
     /**
      * Phase 5 — wasm callee URL allowlist check. Called by
-     * {@link HostCallbacks#invokeWasm} / {@link HostCallbacks#invokeWasmV1}
-     * / {@link HostCallbacks#invokeWasmService} <em>after</em>
+     * {@link HostCallbacks#invokeWasmV1} / {@link HostCallbacks#invokeWasmService}
+     * <em>after</em>
      * {@link #perCallback} has cleared the coarser interface / method
      * axes.
      *

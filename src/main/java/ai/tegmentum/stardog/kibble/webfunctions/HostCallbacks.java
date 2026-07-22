@@ -22,9 +22,11 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 /**
- * Host callbacks satisfying the v0.3.0 WIT world's {@code host} import
- * interface. Uses {@link ComponentVal} at the linker boundary — same pattern
- * as the RDF4J and Jena bindings, adapted to Stardog's {@link Value} hierarchy.
+ * Host callbacks satisfying the {@code tegmentum:webfunction@0.1.0} WIT world's
+ * host-callback imports (graph, http, wasm, observability, prepared-query,
+ * sink, sink-query, document-sink, tracker-sink, fulltext, fast-path).
+ * Uses {@link ComponentVal} at the linker boundary — same pattern as the RDF4J
+ * and Jena bindings, adapted to Stardog's {@link Value} hierarchy.
  */
 public final class HostCallbacks {
 
