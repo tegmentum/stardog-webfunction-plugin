@@ -110,9 +110,14 @@ import java.nio.charset.Charset;
     TestWfCapabilityError.class,
     // Task 303 T5 — wasm-level deadline interruption. TestEpochTicker
     // covers the singleton ticker's start/stop/cadence contract with a
-    // stub engine. TestEpochInterruption (end-to-end wasm trap coverage)
-    // is wired in sub-phase E6.
+    // stub engine; TestFuelTrapMapperInterrupt covers the trap → typed
+    // error promotion (both fast-path shapes and the untyped-trap
+    // fallback that guards on elapsed time past the deadline);
+    // TestEpochInterruption is the end-to-end wasm-trap assertion
+    // against the checked-in example-uppercase-extension component.
     TestEpochTicker.class,
+    TestFuelTrapMapperInterrupt.class,
+    TestEpochInterruption.class,
 })
 
 public class WasmTestSuite extends TestCase {
