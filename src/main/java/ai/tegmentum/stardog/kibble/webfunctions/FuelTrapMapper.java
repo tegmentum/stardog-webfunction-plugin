@@ -35,6 +35,23 @@ package ai.tegmentum.stardog.kibble.webfunctions;
  */
 final class FuelTrapMapper {
 
+    /**
+     * {@code TrapException.TrapType} ordinals as embedded in the wasmtime4j
+     * 47.0.2-1.5.1+ {@code [trap_code:N]} prefix. The Rust
+     * {@code from_wasmtime_error} writes {@code format!("[trap_code:{}]{}",
+     * code, trap)} into the outermost error message so both JNI and Panama
+     * paths can key on the numeric variant instead of parsing the human
+     * text. Ordinals are pinned in
+     * {@code ai.tegmentum.wasmtime4j.exception.TrapException.TrapType} —
+     * mirrored here as ints to keep the mapper free of a compile-time
+     * dependency on the enum layout.
+     */
+    private static final int TRAP_CODE_INTERRUPT = 10;
+    private static final int TRAP_CODE_OUT_OF_FUEL = 12;
+
+    /** Prefix wasmtime4j 1.5.1+ prepends to trapped-error messages. */
+    private static final String TRAP_CODE_PREFIX = "[trap_code:";
+
     private FuelTrapMapper() {}
 
     /**
@@ -147,17 +164,25 @@ final class FuelTrapMapper {
     }
 
     private static boolean isInterruptTrap(final Throwable t) {
-        // Fast path: the wasmtime4j TrapException message shape embeds the
-        // trap type as a {@code [TRAP_TYPE] wasm trap: description} prefix.
-        // INTERRUPT's stock description is "Execution interrupted (timeout
-        // or cancellation)"; wasmtime itself surfaces {@code "wasm trap:
-        // interrupt"} in its unqualified form. Check both.
         final String msg = t.getMessage();
         if (msg != null) {
+            // Strongest signal: numeric [trap_code:N] discriminator embedded
+            // by wasmtime4j 47.0.2-1.5.1+. Ordinal-based dispatch survives
+            // renames and human-text formatting drift; keep it ahead of the
+            // substring shapes below so a substrate that surfaces both a
+            // typed prefix and a mis-shaped human string still resolves.
+            if (extractTrapCode(msg) == TRAP_CODE_INTERRUPT) return true;
+            // Substring fast path: the wasmtime4j TrapException message
+            // shape embeds the trap type as a {@code [TRAP_TYPE] wasm
+            // trap: description} prefix. INTERRUPT's stock description
+            // is "Execution interrupted (timeout or cancellation)";
+            // wasmtime itself surfaces {@code "wasm trap: interrupt"} in
+            // its unqualified form. Kept as a belt-and-suspenders match
+            // for substrates that route through
+            // {@code from_wasmtime_error} without the numeric prefix
+            // (e.g. a non-Trap wasmtime::Error that carries the text
+            // shape from an older backtrace layer).
             if (msg.contains("[INTERRUPT]")) return true;
-            // Wasmtime's raw trap text for epoch interruption; matches
-            // both {@code "wasm trap: interrupt"} and the wasmtime4j
-            // wrapped {@code "Execution interrupted"} variants.
             if (msg.contains("wasm trap: interrupt")) return true;
             if (msg.contains("Execution interrupted")) return true;
         }
@@ -177,6 +202,28 @@ final class FuelTrapMapper {
             // here; the string check above is our fallback.
         }
         return false;
+    }
+
+    /**
+     * Extract the numeric trap code embedded by wasmtime4j 47.0.2-1.5.1+'s
+     * {@code [trap_code:N]} prefix. Returns {@code -1} when the prefix is
+     * absent or malformed. Scans the whole message rather than requiring
+     * the prefix to be at position 0 — the JNI wraps trapped calls with
+     * {@code "Function call trapped: [trap_code:N]..."} shaped strings,
+     * so a bare {@code startsWith} check would miss the wrap.
+     */
+    private static int extractTrapCode(final String msg) {
+        if (msg == null) return -1;
+        final int start = msg.indexOf(TRAP_CODE_PREFIX);
+        if (start < 0) return -1;
+        final int numStart = start + TRAP_CODE_PREFIX.length();
+        final int end = msg.indexOf(']', numStart);
+        if (end <= numStart) return -1;
+        try {
+            return Integer.parseInt(msg.substring(numStart, end));
+        } catch (NumberFormatException ignore) {
+            return -1;
+        }
     }
 
     /**
@@ -265,14 +312,23 @@ final class FuelTrapMapper {
     }
 
     private static boolean isOutOfFuelTrap(final Throwable t) {
-        // Fast path: the compile-time-available webassembly4j TrapException
-        // has a message shape that embeds the trap type — e.g.
-        // "[OUT_OF_FUEL] wasm trap: all fuel consumed by WebAssembly".
-        // Cheaper than reflecting, and covers both the wrapped and
-        // unwrapped shapes.
         final String msg = t.getMessage();
-        if (msg != null && msg.contains("OUT_OF_FUEL")) return true;
-        if (msg != null && msg.contains("all fuel consumed")) return true;
+        if (msg != null) {
+            // Strongest signal: numeric [trap_code:N] discriminator
+            // embedded by wasmtime4j 47.0.2-1.5.1+ — mirrors the
+            // INTERRUPT dispatch above and lets the mapper resolve the
+            // trap type without depending on the human-readable text.
+            if (extractTrapCode(msg) == TRAP_CODE_OUT_OF_FUEL) return true;
+            // Substring fast path: the wasmtime4j TrapException message
+            // shape embeds the trap type — e.g. "[OUT_OF_FUEL] wasm
+            // trap: all fuel consumed by WebAssembly". Kept as a
+            // belt-and-suspenders match for substrates that route
+            // through {@code from_wasmtime_error} without the numeric
+            // prefix (or older webassembly4j surfaces that still emit
+            // the bracketed enum-name shape).
+            if (msg.contains("OUT_OF_FUEL")) return true;
+            if (msg.contains("all fuel consumed")) return true;
+        }
 
         // Fall back to reflectively checking wasmtime4j's TrapType enum.
         // Classpath-sensitive; the string check above is the common case.
