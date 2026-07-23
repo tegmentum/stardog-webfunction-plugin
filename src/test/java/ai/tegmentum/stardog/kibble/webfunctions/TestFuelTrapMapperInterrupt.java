@@ -193,4 +193,81 @@ public class TestFuelTrapMapperInterrupt {
             CallbackContext.unbindIfOutermost(ctx);
         }
     }
+
+    /**
+     * wasmtime4j 47.0.2-1.5.1+ typed-prefix path — the {@code [trap_code:10]}
+     * discriminator is the ordinal for {@code TrapType.INTERRUPT}. Message
+     * carries no human-readable interrupt substring and no wasm-backtrace
+     * fallback shape, so promotion happens strictly through the numeric
+     * dispatch added in Task 311. Deadline is set but elapsed time is
+     * negligible — the fallback matchers would not fire on their own.
+     */
+    @Test
+    public void interruptTrapWithTypedCodePrefixPromotesToDeadlineExceeded() {
+        System.setProperty(WebFunctionConfig.PROP_MAX_EXEC_MILLIS, "60000");
+        final CallbackContext ctx = CallbackContext.bind();
+        try {
+            // Real 1.5.1 wire shape from WasmtimeError::from_wasmtime_error:
+            // "[trap_code:10]WebAssembly trap: <trap Display>". No
+            // "interrupt" or "wasm trap: interrupt" substring — the
+            // typed-code path is the only match.
+            final WfBudgetError mapped = FuelTrapMapper.mapOrNull(
+                    new RuntimeException(
+                            "Runtime error: Function call trapped: "
+                                    + "[trap_code:10]WebAssembly trap: (trap)"),
+                    ctx);
+            assertThat(mapped).isInstanceOf(WfBudgetError.DeadlineExceeded.class);
+            final WfBudgetError.DeadlineExceeded de = (WfBudgetError.DeadlineExceeded) mapped;
+            assertThat(de.deadlineMillis()).isEqualTo(60000L);
+            assertThat(de.source()).isEqualTo(WfBudgetError.DeadlineExceeded.SOURCE_CONFIG);
+            assertThat(de.errorCode()).isEqualTo("WF_DEADLINE_EXCEEDED");
+        } finally {
+            CallbackContext.unbindIfOutermost(ctx);
+        }
+    }
+
+    /**
+     * Typed [trap_code:10] nested in the cause chain still promotes — the
+     * mapper walks up to a bounded depth on the trap-code side just as it
+     * does for the substring shapes.
+     */
+    @Test
+    public void interruptTrapWithTypedCodeNestedInCauseChainStillPromotes() {
+        System.setProperty(WebFunctionConfig.PROP_MAX_EXEC_MILLIS, "5000");
+        final CallbackContext ctx = CallbackContext.bind();
+        try {
+            final Throwable root = new RuntimeException(
+                    "[trap_code:10]WebAssembly trap: (trap)");
+            final Throwable mid = new RuntimeException("wrapper", root);
+            final Throwable outer = new RuntimeException("outer wrapper", mid);
+            final WfBudgetError mapped = FuelTrapMapper.mapOrNull(outer, ctx);
+            assertThat(mapped).isInstanceOf(WfBudgetError.DeadlineExceeded.class);
+        } finally {
+            CallbackContext.unbindIfOutermost(ctx);
+        }
+    }
+
+    /**
+     * Trap-code prefix for a non-INTERRUPT/non-OUT_OF_FUEL variant does NOT
+     * promote — a real memory-out-of-bounds trap should keep its original
+     * error path even when it happens to fire past a configured deadline.
+     * Ordinal 1 = MEMORY_OUT_OF_BOUNDS.
+     */
+    @Test
+    public void otherTypedTrapCodeDoesNotPromote() {
+        System.setProperty(WebFunctionConfig.PROP_MAX_EXEC_MILLIS, "1000");
+        final CallbackContext ctx = CallbackContext.bind();
+        try {
+            final WfBudgetError mapped = FuelTrapMapper.mapOrNull(
+                    new RuntimeException(
+                            "[trap_code:1]WebAssembly trap: memory access out of bounds"),
+                    ctx);
+            // The untyped-fallback needs "error while executing at wasm
+            // backtrace" in the message — this string does not carry it,
+            // so no promotion.
+            assertThat(mapped).isNull();
+        } finally {
+            CallbackContext.unbindIfOutermost(ctx);
+        }
+    }
 }
